@@ -1,0 +1,7 @@
+test_qjson
+*.o
+*.dylib
+*.so
+__pycache__/
+*.pyc
+node_modules/
