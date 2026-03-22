@@ -102,7 +102,7 @@ jobs:
       - name: Checkout sqlcipher-libressl
         uses: actions/checkout@v4
         with:
-          repository: nickoala/sqlcipher-libressl
+          repository: wmacevoy/sqlcipher-libressl
           path: sqlcipher-libressl
 
       - uses: actions/setup-python@v5
