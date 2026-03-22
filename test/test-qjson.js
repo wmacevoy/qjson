@@ -5,7 +5,7 @@
 //       bun run src/test-qjson.js
 // ============================================================
 
-import { qjson_parse, qjson_stringify, js64_encode, js64_decode } from '../src/qjson.js';
+import { qjson_parse, qjson_stringify, js64_encode, js64_decode, Unbound } from '../src/qjson.js';
 
 var passed = 0, failed = 0;
 var hasBigInt = typeof BigInt !== "undefined";
@@ -305,6 +305,85 @@ test("empty blob parse", function() {
   var obj = qjson_parse("0j");
   eq(obj.$qjson, "blob");
   eq(obj.data.length, 0);
+});
+
+// ── Unbound ──────────────────────────────────────────────────
+
+test("Unbound parse bare", function() {
+  var v = qjson_parse("?X");
+  eq(v.$qjson, "unbound");
+  eq(v.name, "X");
+});
+
+test("Unbound parse anonymous", function() {
+  var v = qjson_parse("?");
+  eq(v.$qjson, "unbound");
+  eq(v.name, "_");
+});
+
+test("Unbound parse underscore", function() {
+  var v = qjson_parse("?_");
+  eq(v.$qjson, "unbound");
+  eq(v.name, "_");
+});
+
+test("Unbound parse multi-char", function() {
+  var v = qjson_parse("?myVar_1");
+  eq(v.$qjson, "unbound");
+  eq(v.name, "myVar_1");
+});
+
+test("Unbound parse quoted", function() {
+  var v = qjson_parse('?"Bob\'s Last Memo"');
+  eq(v.$qjson, "unbound");
+  eq(v.name, "Bob's Last Memo");
+});
+
+test("Unbound in array", function() {
+  var v = qjson_parse('["reading", ?From, "temp", ?Val]');
+  eq(v.length, 4);
+  eq(v[1].$qjson, "unbound");
+  eq(v[1].name, "From");
+  eq(v[3].$qjson, "unbound");
+  eq(v[3].name, "Val");
+});
+
+test("Unbound in object", function() {
+  var v = qjson_parse("{key: ?X, value: 42}");
+  eq(v.key.$qjson, "unbound");
+  eq(v.key.name, "X");
+  eq(v.value, 42);
+});
+
+test("Unbound stringify bare", function() {
+  var v = new Unbound("X");
+  eq(qjson_stringify(v), "?X");
+});
+
+test("Unbound stringify anonymous", function() {
+  var v = new Unbound("_");
+  eq(qjson_stringify(v), "?_");
+});
+
+test("Unbound stringify quoted", function() {
+  var v = new Unbound("Bob's Last Memo");
+  var s = qjson_stringify(v);
+  assert(s.charAt(0) === "?", "starts with ?");
+  assert(s.charAt(1) === '"', "name is quoted");
+});
+
+test("Unbound round-trip bare", function() {
+  var v = new Unbound("myVar");
+  var rt = qjson_parse(qjson_stringify(v));
+  eq(rt.$qjson, "unbound");
+  eq(rt.name, "myVar");
+});
+
+test("Unbound round-trip quoted", function() {
+  var v = new Unbound("Bob's Last Memo");
+  var rt = qjson_parse(qjson_stringify(v));
+  eq(rt.$qjson, "unbound");
+  eq(rt.name, "Bob's Last Memo");
 });
 
 console.log("\n" + (passed + failed) + " tests: " + passed + " passed, " + failed + " failed");

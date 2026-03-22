@@ -1,6 +1,6 @@
 {
   "name": "qjson",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "QJSON: JSON superset with exact numerics and interval-projected SQL storage",
   "main": "src/qjson.js",
   "exports": {

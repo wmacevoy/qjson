@@ -181,6 +181,8 @@ static void skip_ws(pstate *p) {
 }
 
 static qjson_val *parse_value(pstate *p);
+static qjson_val *parse_unbound(pstate *p);
+static qjson_val *parse_string_val(pstate *p);
 
 static qjson_val *make_val(pstate *p, qjson_type t) {
     qjson_val *v = qjson_arena_alloc(p->arena, sizeof(qjson_val));
@@ -431,6 +433,41 @@ done:;
     return v;
 }
 
+/* ── Unbound parsing ─────────────────────────────────────── */
+
+static qjson_val *parse_unbound(pstate *p) {
+    p->pos++; /* skip '?' */
+    const char *name; int name_len;
+    if (p->pos < p->len && p->s[p->pos] == '"') {
+        /* Quoted name: ?"Bob's Last Memo" */
+        qjson_val *sv = parse_string_val(p);
+        if (!sv) return NULL;
+        name = sv->str.s;
+        name_len = sv->str.len;
+    } else {
+        /* Bare identifier or anonymous */
+        int start = p->pos;
+        while (p->pos < p->len) {
+            char c = p->s[p->pos];
+            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                (c >= '0' && c <= '9') || c == '_') p->pos++;
+            else break;
+        }
+        if (p->pos == start) {
+            /* Just '?' alone → anonymous "_" */
+            name = arena_strdup(p->arena, "_", 1);
+            name_len = 1;
+        } else {
+            name_len = p->pos - start;
+            name = arena_strdup(p->arena, p->s + start, name_len);
+        }
+    }
+    if (!name) return NULL;
+    qjson_val *v = make_val(p, QJSON_UNBOUND);
+    if (v) { v->str.s = name; v->str.len = name_len; }
+    return v;
+}
+
 /* ── Value dispatch ──────────────────────────────────────── */
 
 static qjson_val *parse_value(pstate *p) {
@@ -446,6 +483,7 @@ static qjson_val *parse_value(pstate *p) {
     if (c == 'n' && p->pos + 4 <= p->len && memcmp(p->s + p->pos, "null", 4) == 0)
         { p->pos += 4; return make_val(p, QJSON_NULL); }
     if (c == '-' || (c >= '0' && c <= '9')) return parse_number(p);
+    if (c == '?') return parse_unbound(p);
     return NULL;
 }
 
@@ -505,6 +543,28 @@ static int stringify_val(const qjson_val *v, char *buf, int pos, int cap) {
     case QJSON_BIGFLOAT:
         pos = emit(buf, pos, cap, v->str.s, v->str.len);
         return emit_char(buf, pos, cap, 'L');
+    case QJSON_UNBOUND: {
+        pos = emit_char(buf, pos, cap, '?');
+        /* Check if name needs quoting (not a simple identifier) */
+        int needs_quote = 0;
+        if (v->str.len == 0) needs_quote = 0; /* empty → just ? */
+        else {
+            char c0 = v->str.s[0];
+            if (!((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_'))
+                needs_quote = 1;
+            if (!needs_quote) {
+                for (int i = 1; i < v->str.len; i++) {
+                    char ci = v->str.s[i];
+                    if (!((ci >= 'a' && ci <= 'z') || (ci >= 'A' && ci <= 'Z') ||
+                          (ci >= '0' && ci <= '9') || ci == '_'))
+                        { needs_quote = 1; break; }
+                }
+            }
+        }
+        if (needs_quote)
+            return emit_str_escaped(buf, pos, cap, v->str.s, v->str.len);
+        return emit(buf, pos, cap, v->str.s, v->str.len);
+    }
     case QJSON_BLOB: {
         pos = emit(buf, pos, cap, "0j", 2);
         /* Compute JS64 output length: ((data_len * 4 + 2) / 3) */
@@ -610,6 +670,10 @@ void qjson_val_project(const qjson_val *v, double *lo, double *hi) {
     case QJSON_BIGFLOAT:
         qjson_project(v->str.s, v->str.len, lo, hi);
         return;
+    case QJSON_UNBOUND:
+        *lo = -INFINITY;
+        *hi = INFINITY;
+        return;
     case QJSON_BLOB:
         *lo = *hi = 0;
         return;
@@ -705,11 +769,66 @@ int qjson_decimal_cmp(const char *a, int a_len, const char *b, int b_len) {
 
 /* ── Interval comparison ────────────────────────────────── */
 
-int qjson_cmp(double a_lo, double a_hi, const char *a_str, int a_len,
-           double b_lo, double b_hi, const char *b_str, int b_len)
+#ifdef QJSON_USE_LIBBF
+/* Compare exact double value against decimal string using libbf. */
+static int _cmp_double_vs_str(double dval, const char *str, int str_len) {
+    char buf[320];
+    if (str_len >= (int)sizeof(buf)) str_len = (int)sizeof(buf) - 1;
+    memcpy(buf, str, str_len); buf[str_len] = '\0';
+
+    bf_context_t ctx;
+    bf_context_init(&ctx, _qjson_bf_realloc, NULL);
+    bf_t a, b;
+    bf_init(&ctx, &a);
+    bf_init(&ctx, &b);
+    bf_set_float64(&a, dval);
+    bf_atof(&b, buf, NULL, 10, BF_PREC_INF, BF_RNDN);
+    int r = bf_cmp(&a, &b);
+    bf_delete(&a);
+    bf_delete(&b);
+    bf_context_end(&ctx);
+    return r < 0 ? -1 : r > 0 ? 1 : 0;
+}
+#else
+/* Fallback: convert double to decimal string, compare strings. */
+static int _cmp_double_vs_str(double dval, const char *str, int str_len) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%.21g", dval);
+    return -abs_decimal_cmp(str, str_len, buf, n);
+}
+#endif
+
+int qjson_cmp(int a_type, double a_lo, const char *a_str, int a_str_len, double a_hi,
+              int b_type, double b_lo, const char *b_str, int b_str_len, double b_hi)
 {
+    /* Unbound: compare names if both unbound, otherwise unbound matches all */
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        if (a_type == QJSON_UNBOUND && b_type == QJSON_UNBOUND) {
+            if (!a_str && !b_str) return 0;
+            if (!a_str) return -1;
+            if (!b_str) return 1;
+            int min = a_str_len < b_str_len ? a_str_len : b_str_len;
+            int r = memcmp(a_str, b_str, min);
+            if (r != 0) return r < 0 ? -1 : 1;
+            return a_str_len < b_str_len ? -1 : a_str_len > b_str_len ? 1 : 0;
+        }
+        return 0; /* unbound matches any concrete value */
+    }
+
+    /* Fast interval checks */
     if (a_hi < b_lo) return -1;                     /* a definitely < b */
     if (a_lo > b_hi) return  1;                     /* a definitely > b */
-    if (a_lo == a_hi && b_lo == b_hi) return 0;     /* both exact, same double */
-    return qjson_decimal_cmp(a_str, a_len, b_str, b_len);
+    if (a_lo == a_hi && b_lo == b_hi) return 0;     /* both exact doubles */
+
+    /* Overlap zone: need exact comparison */
+    if (a_lo == a_hi) {
+        /* a is exact double, b has decimal str */
+        return _cmp_double_vs_str(a_lo, b_str, b_str_len);
+    }
+    if (b_lo == b_hi) {
+        /* b is exact double, a has decimal str */
+        return -_cmp_double_vs_str(b_lo, a_str, a_str_len);
+    }
+    /* Both have decimal strings */
+    return qjson_decimal_cmp(a_str, a_str_len, b_str, b_str_len);
 }

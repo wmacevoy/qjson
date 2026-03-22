@@ -19,6 +19,7 @@ and human-friendly syntax.
 | BigDecimal | — | `M` suffix | `67432.50M` |
 | BigFloat | — | `L` suffix | `3.14159265358979L` |
 | blob | — | `0j` prefix (JS64) | `0jSGVsbG8` |
+| unbound | — | `?` prefix | `?X`, `?"Bob's Last Memo"` |
 
 ## Numbers
 
@@ -89,6 +90,45 @@ Follows the `0b`/`0o`/`0x` convention for literal prefixes.
 `j` for JS64.  Case-insensitive (`0j` = `0J`).  Doesn't
 conflict with `${}` template interpolation.
 
+## Unbound variables: `?` prefix
+
+```
+?X                    bare identifier
+?_                    anonymous (same as bare ?)
+?myVar_1              alphanumeric + underscore
+?"Bob's Last Memo"    quoted string — any content
+```
+
+An unbound variable represents "match anything".  It is a leaf
+value like a number or string.  The name after `?` can be a bare
+identifier or a quoted string (same quoting rules as object keys).
+`?` alone is shorthand for `?_` (anonymous).
+
+### Projection
+
+Unbound projects to `[-Inf, "?name", +Inf]`:
+
+| Column | Value |
+|--------|-------|
+| lo | `-Infinity` |
+| str | `"?X"` (the `?` prefix + name) |
+| hi | `+Infinity` |
+
+The universal interval passes through all range comparisons
+without constraining — an unbound variable matches everything.
+
+### Use case
+
+Prolog facts are QJSON arrays.  Unbound slots make patterns:
+
+```
+[reading, sensor1, temp, 35]       // fact
+[reading, ?From, temp, ?Val]       // pattern — matches the fact
+```
+
+Two unbounds with the same name must bind to the same value.
+Two unbounds with different names are independent.
+
 ## Comments
 
 ```
@@ -136,7 +176,8 @@ typedef enum {
     QJSON_BLOB,         // JS64-decoded byte array
     QJSON_STRING,
     QJSON_ARRAY,
-    QJSON_OBJECT
+    QJSON_OBJECT,
+    QJSON_UNBOUND       // ?name — unbound variable, str holds name
 } qjson_type;
 ```
 
@@ -582,13 +623,22 @@ non-exact.
 ### qjson_cmp (C API)
 
 ```c
-int qjson_cmp(a_lo, a_hi, a_str, a_len, b_lo, b_hi, b_str, b_len) {
+int qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
+              b_type, b_lo, b_str, b_str_len, b_hi) {
+    // Unbound: compare names if both unbound, else matches any
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) ...
     if (a_hi < b_lo) return -1;                  // [brackets]: separated
     if (a_lo > b_hi) return  1;                  // [brackets]: separated
     if (a_lo == a_hi && b_lo == b_hi) return 0;  // {braces}: both exact
-    return qjson_decimal_cmp(a_str, a_len, b_str, b_len);  // val() decode
+    // Overlap: resolve exact value using type
+    // If lo == hi → exact double (val = lo); else exact(type, str) via libbf
+    ...
 }
 ```
+
+The `type` parameter is the `qjson_type` enum value.  Needed to
+resolve exact values when one side is an exact double (str=NULL)
+and the other has a decimal string, and to handle unbound variables.
 
 All ordering operators: `qjson_cmp(...) <op> 0`.
 Equality: compare `[lo, str, hi]` columns directly.
@@ -735,9 +785,10 @@ Generated SQL (3-tier comparison):
 ```sql
 WHERE n.hi > 3.141592653589793                          -- [brackets]: index scan
   AND (n.lo > 3.1415926535897936                        -- {braces}: both exact
-       OR qjson_cmp(n.lo, n.hi, n.str,
-                    3.141592653589793, 3.1415926535897936,
-                    '3.14159265358979323846') > 0)      -- val(): exact fallback
+       OR qjson_cmp(v.type_id, n.lo, n.str, n.hi,
+                    5, 3.141592653589793,
+                    '3.14159265358979323846',
+                    3.1415926535897936) > 0)             -- val(): exact fallback
 ```
 
 The indexed `hi` column eliminates most rows.  The `lo` check

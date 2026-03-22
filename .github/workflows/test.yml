@@ -160,7 +160,7 @@ jobs:
               HAS_CIPHER = False
 
           from qjson_sql import qjson_sql_adapter
-          from qjson import BigInt, BigFloat, Blob
+          from qjson import BigInt, BigFloat, Blob, Unbound
           from decimal import Decimal
 
           key = 'ci-test-key' if HAS_CIPHER else None
@@ -180,6 +180,7 @@ jobs:
               'nil': None,
               'yes': True,
               'no': False,
+              'var': Unbound('X'),
           })
           a['commit']()
 
@@ -196,6 +197,7 @@ jobs:
           assert v['nil'] is None
           assert v['yes'] is True
           assert v['no'] is False
+          assert isinstance(v['var'], Unbound) and v['var'].name == 'X'
 
           a['close']()
           cipher_status = 'SQLCipher (encrypted)' if HAS_CIPHER else 'sqlite3 (key no-op)'

@@ -137,6 +137,32 @@ class BigFloat:
         return hash(("BigFloat", self._raw))
 
 
+class Unbound:
+    """Unbound variable.  Round-trips with '?' prefix.
+
+    ?X, ?_, ?"Bob's Last Memo"
+    Projects to [-Inf, "?name", +Inf] — matches everything.
+    """
+    __slots__ = ("name",)
+
+    def __init__(self, name="_"):
+        self.name = str(name)
+
+    def __repr__(self):
+        return "Unbound(%r)" % self.name
+
+    def __str__(self):
+        return "?" + self.name
+
+    def __eq__(self, other):
+        if isinstance(other, Unbound):
+            return self.name == other.name
+        return NotImplemented
+
+    def __hash__(self):
+        return hash(("Unbound", self.name))
+
+
 # ── Parser ───────────────────────────────────────────────────
 
 def parse(text):
@@ -230,6 +256,8 @@ class _Parser:
             return self.blob()
         if c == "-" or c.isdigit():
             return self.number()
+        if c == "?":
+            return self.unbound()
         raise ValueError("Unexpected '%s' at %d" % (c, self.pos))
 
     def literal(self, word, val):
@@ -313,6 +341,21 @@ class _Parser:
         raw = self.text[start:self.pos]
         return Blob(js64_decode(raw))
 
+    def unbound(self):
+        self.pos += 1  # skip '?'
+        if self.pos < self.end and self.text[self.pos] == '"':
+            name = self.string()
+        else:
+            start = self.pos
+            while self.pos < self.end:
+                c = self.text[self.pos]
+                if c.isalnum() or c == '_':
+                    self.pos += 1
+                else:
+                    break
+            name = self.text[start:self.pos] if self.pos > start else "_"
+        return Unbound(name)
+
     def obj(self):
         self.expect("{")
         d = {}
@@ -370,6 +413,12 @@ def _fmt(obj, ind, depth):
         return "true"
     if obj is False:
         return "false"
+    if isinstance(obj, Unbound):
+        import re
+        name = obj.name
+        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+            return "?" + name
+        return "?" + _esc(name)
     if isinstance(obj, Blob):
         return "0j" + js64_encode(obj.data)
     if isinstance(obj, BigFloat):

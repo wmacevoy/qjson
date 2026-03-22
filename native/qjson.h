@@ -24,7 +24,8 @@ typedef enum {
     QJSON_BLOB,         /* binary data, 0j prefix (JS64 encoded) */
     QJSON_STRING,
     QJSON_ARRAY,
-    QJSON_OBJECT
+    QJSON_OBJECT,
+    QJSON_UNBOUND       /* ?name — unbound variable, str holds name */
 } qjson_type;
 
 typedef struct qjson_val qjson_val;
@@ -82,6 +83,8 @@ static inline qjson_val  *qjson_arr_get(const qjson_val *v, int i) {
 }
 static inline int      qjson_obj_len(const qjson_val *v) { return v && v->type == QJSON_OBJECT ? v->obj.count : 0; }
 qjson_val *qjson_obj_get(const qjson_val *v, const char *key);
+static inline const char *qjson_unbound_name(const qjson_val *v) { return v && v->type == QJSON_UNBOUND ? v->str.s : NULL; }
+static inline int      qjson_unbound_name_len(const qjson_val *v) { return v && v->type == QJSON_UNBOUND ? v->str.len : 0; }
 
 /* ── Interval projection ────────────────────────────────── */
 
@@ -99,8 +102,9 @@ qjson_val *qjson_obj_get(const qjson_val *v, const char *key);
 void qjson_project(const char *raw, int len, double *lo, double *hi);
 
 /* Project a parsed qjson_val to its interval.
-   QJSON_NUM:     lo == hi == val->num (plain doubles are exact).
+   QJSON_NUM:      lo == hi == val->num (plain doubles are exact).
    QJSON_BIGINT/QJSON_BIGDEC/QJSON_BIGFLOAT: directed rounding on raw string.
+   QJSON_UNBOUND:  lo = -INFINITY, hi = +INFINITY (matches everything).
    Other types: lo = hi = 0. */
 void qjson_val_project(const qjson_val *v, double *lo, double *hi);
 
@@ -112,7 +116,10 @@ int qjson_decimal_cmp(const char *a, int a_len, const char *b, int b_len);
 
 /* Compare two projected values.  Returns -1, 0, or 1.
    Uses intervals for fast accept/reject, falls through to
-   qjson_decimal_cmp only in the overlap zone (~0.001%).
+   exact comparison only in the overlap zone (~0.001%).
+
+   type is the qjson_type enum value — needed to resolve exact values
+   when one side is an exact double (str=NULL) and the other is not.
 
    All six operators: qjson_cmp(...) <op> 0.
 
@@ -120,8 +127,8 @@ int qjson_decimal_cmp(const char *a, int a_len, const char *b, int b_len);
      a < b  →  (a_hi < b_lo) OR ((a_lo < b_hi) AND cmp(a,b) < 0)
      a == b →  (a_hi >= b_lo AND b_hi >= a_lo) AND cmp(a,b) = 0
    See docs/qjson.md SQL representation for all operators. */
-int qjson_cmp(double a_lo, double a_hi, const char *a_str, int a_len,
-              double b_lo, double b_hi, const char *b_str, int b_len);
+int qjson_cmp(int a_type, double a_lo, const char *a_str, int a_str_len, double a_hi,
+              int b_type, double b_lo, const char *b_str, int b_str_len, double b_hi);
 
 /* ── JS64 encode/decode ─────────────────────────────────── */
 

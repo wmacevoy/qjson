@@ -45,7 +45,7 @@ make test
 Format:      parse/stringify QJSON text ↔ in-memory values
 Projection:  value → [lo, str, hi] IEEE double interval
              roundDown/roundUp — identical across C, JS, Python
-Comparison:  qjson_cmp (4 lines: brackets → exact → decimal fallback)
+Comparison:  qjson_cmp (type-aware: brackets → exact → libbf fallback)
 SQL adapter: normalized 8-table schema — store/load/remove any QJSON value
 Query:       jq-like path expressions → SQL JOIN chains (pure translation)
 Reconstruct: value_id → canonical QJSON text (PG: qjson_reconstruct)
@@ -75,8 +75,8 @@ Package structure: `qjson/` (pip), `package.json` (npm), `Dockerfile` (Docker).
 
 ### Key concepts
 
-**QJSON types**: N = BigInt, M = BigDecimal, L = BigFloat, 0j = blob (JS64).
-Valid JSON is valid QJSON.
+**QJSON types**: N = BigInt, M = BigDecimal, L = BigFloat, 0j = blob (JS64),
+? = Unbound variable (`?X`, `?"quoted name"`).  Valid JSON is valid QJSON.
 
 **Interval projection `[lo, str, hi]`**:
 - `lo` — largest IEEE double <= exact value (`roundDown`)
@@ -84,13 +84,16 @@ Valid JSON is valid QJSON.
 - `str` — exact string representation, NULL when lo == hi (exact double)
 - Exact doubles: lo == hi (point interval, 99.999% of values)
 - Inexact: lo + 1 ULP == hi (1-ULP bracket)
+- Unbound: lo = -Inf, str = "?name", hi = +Inf (matches everything)
 
-**Comparison `qjson_cmp`**:
+**Comparison `qjson_cmp`** (type-aware):
 ```c
-if (a_hi < b_lo) return -1;                  // intervals separated
-if (a_lo > b_hi) return  1;                  // intervals separated
-if (a_lo == a_hi && b_lo == b_hi) return 0;  // both exact doubles
-return qjson_decimal_cmp(a_str, a_len, b_str, b_len);
+qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
+          b_type, b_lo, b_str, b_str_len, b_hi)
+// Unbound: compare names if both unbound, else matches any value
+// Brackets: a_hi < b_lo → -1, a_lo > b_hi → 1
+// Both exact: a_lo == a_hi && b_lo == b_hi → 0
+// Overlap: resolve exact value using type (lo if exact double, libbf(str) otherwise)
 ```
 
 **SQL adapter**: normalized relational schema with configurable prefix

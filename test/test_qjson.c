@@ -266,12 +266,20 @@ static void test_decimal_cmp(void) {
  *   a <op> b = (interval_accept) OR ((interval_not_reject) AND cmp <op> 0)
  */
 
-/* Helper: project + qjson_cmp in one call */
+/* Helper: project + qjson_cmp in one call.
+   Treats both sides as QJSON_BIGDEC (has str) since they come from raw strings. */
 static int cmp(const char *a, const char *b) {
     double a_lo, a_hi, b_lo, b_hi;
     qjson_project(a, strlen(a), &a_lo, &a_hi);
     qjson_project(b, strlen(b), &b_lo, &b_hi);
-    return qjson_cmp(a_lo, a_hi, a, strlen(a), b_lo, b_hi, b, strlen(b));
+    const char *a_str = (a_lo == a_hi) ? NULL : a;
+    int a_str_len = (a_lo == a_hi) ? 0 : (int)strlen(a);
+    const char *b_str = (b_lo == b_hi) ? NULL : b;
+    int b_str_len = (b_lo == b_hi) ? 0 : (int)strlen(b);
+    int a_type = (a_lo == a_hi) ? QJSON_NUM : QJSON_BIGDEC;
+    int b_type = (b_lo == b_hi) ? QJSON_NUM : QJSON_BIGDEC;
+    return qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
+                     b_type, b_lo, b_str, b_str_len, b_hi);
 }
 
 #define LT(a, b)  (cmp(a, b) <  0)
@@ -508,6 +516,116 @@ static void test_parse_blob(void) {
     }
 }
 
+/* -- Unbound tests -------------------------------------------- */
+
+static void test_parse_unbound(void) {
+    printf("\n=== Parse unbound ===\n");
+    qjson_arena a; qjson_arena_init(&a, arena_buf, sizeof(arena_buf));
+
+    qjson_val *v = qjson_parse(&a, "?X", 2);
+    TEST("parse ?X type", v && v->type == QJSON_UNBOUND);
+    TEST("parse ?X name", v && strcmp(v->str.s, "X") == 0);
+
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "?", 1);
+    TEST("parse ? anonymous", v && v->type == QJSON_UNBOUND && strcmp(v->str.s, "_") == 0);
+
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "?_", 2);
+    TEST("parse ?_ underscore", v && v->type == QJSON_UNBOUND && strcmp(v->str.s, "_") == 0);
+
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "?myVar_1", 8);
+    TEST("parse ?myVar_1", v && v->type == QJSON_UNBOUND && strcmp(v->str.s, "myVar_1") == 0);
+
+    /* Quoted name */
+    qjson_arena_reset(&a);
+    const char *qs = "?\"hello world\"";
+    v = qjson_parse(&a, qs, strlen(qs));
+    TEST("parse ?\"hello world\"", v && v->type == QJSON_UNBOUND && strcmp(v->str.s, "hello world") == 0);
+
+    /* In array */
+    qjson_arena_reset(&a);
+    const char *arr = "[?X, 42, ?Y]";
+    v = qjson_parse(&a, arr, strlen(arr));
+    TEST("unbound in array", v && v->type == QJSON_ARRAY && v->arr.count == 3);
+    TEST("arr[0] unbound", v->arr.items[0]->type == QJSON_UNBOUND && strcmp(v->arr.items[0]->str.s, "X") == 0);
+    TEST("arr[1] num", v->arr.items[1]->type == QJSON_NUM && v->arr.items[1]->num == 42);
+    TEST("arr[2] unbound", v->arr.items[2]->type == QJSON_UNBOUND && strcmp(v->arr.items[2]->str.s, "Y") == 0);
+
+    /* Stringify round-trip */
+    qjson_arena_reset(&a);
+    char out[256];
+    v = qjson_parse(&a, "?X", 2);
+    int n = qjson_stringify(v, out, sizeof(out));
+    TEST("stringify ?X", n == 2 && strcmp(out, "?X") == 0);
+
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "?_", 2);
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("stringify ?_", n == 2 && strcmp(out, "?_") == 0);
+
+    /* Quoted round-trip */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, qs, strlen(qs));
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("stringify quoted", out[0] == '?' && out[1] == '"');
+    /* Parse the stringified output back */
+    qjson_arena_reset(&a);
+    qjson_val *v2 = qjson_parse(&a, out, n);
+    TEST("round-trip quoted type", v2 && v2->type == QJSON_UNBOUND);
+    TEST("round-trip quoted name", v2 && strcmp(v2->str.s, "hello world") == 0);
+
+    /* Projection: [-inf, +inf] */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "?X", 2);
+    {
+        double lo, hi;
+        qjson_val_project(v, &lo, &hi);
+        TEST("unbound projection lo=-inf", lo == -INFINITY);
+        TEST("unbound projection hi=+inf", hi == INFINITY);
+    }
+}
+
+/* -- Comparison fix tests ------------------------------------- */
+
+static void test_cmp_fix(void) {
+    printf("\n=== Comparison fix (type-aware) ===\n");
+
+    /* 0.3M vs 0.3 (double): different values, should not be equal */
+    double m_lo, m_hi, d_lo, d_hi;
+    qjson_project("0.3", 3, &m_lo, &m_hi);
+    d_lo = d_hi = 0.3; /* exact double */
+
+    /* Old bug: this would call qjson_decimal_cmp with NULL str */
+    int r = qjson_cmp(QJSON_BIGDEC, m_lo, "0.3", 3, m_hi,
+                       QJSON_NUM, d_lo, NULL, 0, d_hi);
+    TEST("0.3M != 0.3 (double)", r != 0);
+    TEST("0.3M > 0.3 (double)", r > 0); /* exact 0.3 > ieee double 0.2999... */
+
+    /* 0.5M vs 0.5: same value, both exact */
+    qjson_project("0.5", 3, &m_lo, &m_hi);
+    d_lo = d_hi = 0.5;
+    r = qjson_cmp(QJSON_BIGDEC, m_lo, NULL, 0, m_hi,
+                   QJSON_NUM, d_lo, NULL, 0, d_hi);
+    TEST("0.5M == 0.5 (double)", r == 0);
+
+    /* Unbound vs unbound: same name → equal */
+    r = qjson_cmp(QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY,
+                   QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY);
+    TEST("?X == ?X", r == 0);
+
+    /* Unbound vs unbound: different name → not equal */
+    r = qjson_cmp(QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY,
+                   QJSON_UNBOUND, -INFINITY, "?Y", 2, INFINITY);
+    TEST("?X != ?Y", r != 0);
+
+    /* Unbound vs concrete: matches (returns 0) */
+    r = qjson_cmp(QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY,
+                   QJSON_NUM, 42.0, NULL, 0, 42.0);
+    TEST("?X matches 42", r == 0);
+}
+
 /* -- Benchmark ------------------------------------------------ */
 
 static void benchmark(void) {
@@ -581,6 +699,8 @@ int main(void) {
     test_interval_cmp();
     test_js64_encode_decode();
     test_parse_blob();
+    test_parse_unbound();
+    test_cmp_fix();
     benchmark();
 
     printf("\n%d/%d tests passed\n", pass, pass + fail);

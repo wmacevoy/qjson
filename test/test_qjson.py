@@ -6,7 +6,7 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from decimal import Decimal
-from qjson import parse, stringify, BigInt, BigFloat, Blob, js64_encode, js64_decode
+from qjson import parse, stringify, BigInt, BigFloat, Blob, Unbound, js64_encode, js64_decode
 
 passed = 0
 failed = 0
@@ -333,6 +333,85 @@ test("blob parse uppercase", test_blob_parse_uppercase)
 test("blob in object", test_blob_in_object)
 test("blob stringify round-trip", test_blob_stringify_roundtrip)
 test("blob empty", test_blob_empty)
+
+# ── Unbound ──────────────────────────────────────────────────
+
+def test_unbound_parse_bare():
+    v = parse('?X')
+    assert isinstance(v, Unbound)
+    assert v.name == 'X'
+
+def test_unbound_parse_anonymous():
+    v = parse('?')
+    assert isinstance(v, Unbound)
+    assert v.name == '_'
+
+def test_unbound_parse_underscore():
+    v = parse('?_')
+    assert isinstance(v, Unbound)
+    assert v.name == '_'
+
+def test_unbound_parse_multichar():
+    v = parse('?myVar_1')
+    assert isinstance(v, Unbound)
+    assert v.name == 'myVar_1'
+
+def test_unbound_parse_quoted():
+    v = parse('?"Bob\'s Last Memo"')
+    assert isinstance(v, Unbound)
+    assert v.name == "Bob's Last Memo"
+
+def test_unbound_in_array():
+    v = parse('["reading", ?From, "temp", ?Val]')
+    assert len(v) == 4
+    assert isinstance(v[1], Unbound) and v[1].name == 'From'
+    assert isinstance(v[3], Unbound) and v[3].name == 'Val'
+
+def test_unbound_in_object():
+    v = parse('{key: ?X, value: 42}')
+    assert isinstance(v['key'], Unbound) and v['key'].name == 'X'
+    assert v['value'] == 42
+
+def test_unbound_stringify_bare():
+    assert stringify(Unbound('X')) == '?X'
+
+def test_unbound_stringify_anonymous():
+    assert stringify(Unbound('_')) == '?_'
+
+def test_unbound_stringify_quoted():
+    s = stringify(Unbound("Bob's Last Memo"))
+    assert s.startswith('?')
+    assert s[1] == '"'
+
+def test_unbound_roundtrip_bare():
+    v = Unbound('myVar')
+    rt = parse(stringify(v))
+    assert isinstance(rt, Unbound)
+    assert rt.name == 'myVar'
+
+def test_unbound_roundtrip_quoted():
+    v = Unbound("Bob's Last Memo")
+    rt = parse(stringify(v))
+    assert isinstance(rt, Unbound)
+    assert rt.name == "Bob's Last Memo"
+
+def test_unbound_equality():
+    assert Unbound('X') == Unbound('X')
+    assert Unbound('X') != Unbound('Y')
+
+test("Unbound parse bare", test_unbound_parse_bare)
+test("Unbound parse anonymous", test_unbound_parse_anonymous)
+test("Unbound parse underscore", test_unbound_parse_underscore)
+test("Unbound parse multi-char", test_unbound_parse_multichar)
+test("Unbound parse quoted", test_unbound_parse_quoted)
+test("Unbound in array", test_unbound_in_array)
+test("Unbound in object", test_unbound_in_object)
+test("Unbound stringify bare", test_unbound_stringify_bare)
+test("Unbound stringify anonymous", test_unbound_stringify_anonymous)
+test("Unbound stringify quoted", test_unbound_stringify_quoted)
+test("Unbound round-trip bare", test_unbound_roundtrip_bare)
+test("Unbound round-trip quoted", test_unbound_roundtrip_quoted)
+test("Unbound equality", test_unbound_equality)
 
 print("\n%d tests: %d passed, %d failed" % (passed + failed, passed, failed))
 if failed:

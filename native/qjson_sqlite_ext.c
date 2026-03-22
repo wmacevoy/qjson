@@ -393,14 +393,15 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                 else
                     dstr_catf(out, " %s.value != '%s'", sva, val.buf);
             } else {
-                /* numeric: strip suffix, project interval */
+                /* numeric: strip suffix, determine query type, project interval */
                 dstr raw; dstr_init(&raw);
                 dstr_cat(&raw, val.buf);
+                int q_type = QJSON_NUM; /* default: plain number */
                 if (raw.len > 0) {
                     char last = raw.buf[raw.len - 1];
-                    if (last == 'N' || last == 'M' || last == 'L' ||
-                        last == 'n' || last == 'm' || last == 'l')
-                        raw.buf[--raw.len] = '\0';
+                    if (last == 'N' || last == 'n') { q_type = QJSON_BIGINT; raw.buf[--raw.len] = '\0'; }
+                    else if (last == 'M' || last == 'm') { q_type = QJSON_BIGDEC; raw.buf[--raw.len] = '\0'; }
+                    else if (last == 'L' || last == 'l') { q_type = QJSON_BIGFLOAT; raw.buf[--raw.len] = '\0'; }
                 }
 
                 double q_lo, q_hi;
@@ -411,6 +412,12 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                 char na[32]; snprintf(na, sizeof(na), "wn_%d", sb->alias_num);
                 dstr_catf(&sb->joins, " JOIN \"%snumber\" %s ON %s.value_id = %s",
                           sb->prefix, na, na, wvid.buf);
+
+                /* Also join value table for stored type (needed by qjson_cmp) */
+                sb->alias_num++;
+                char nva[32]; snprintf(nva, sizeof(nva), "wnv_%d", sb->alias_num);
+                dstr_catf(&sb->joins, " JOIN \"%svalue\" %s ON %s.id = %s.value_id",
+                          sb->prefix, nva, nva, na);
 
                 if (strcmp(op, "==") == 0) {
                     if (exact)
@@ -427,25 +434,38 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                         dstr_catf(out, " NOT (%s.lo = %.17g AND %s.hi = %.17g AND %s.str = '%s')",
                                   na, q_lo, na, q_hi, na, raw.buf);
                 } else {
-                    /* Ordering: bracket pre-filter + qjson_cmp exact fallback */
+                    /* Ordering: bracket pre-filter + qjson_cmp with type-aware exact fallback */
                     dstr q_str_sql; dstr_init(&q_str_sql);
                     if (exact) dstr_cat(&q_str_sql, "NULL");
                     else       dstr_catf(&q_str_sql, "'%s'", raw.buf);
 
+                    /* Map qjson_type enum to integer for SQL. Stored type comes from
+                       a CASE on the value table's type text column. */
+                    const char *stored_type_expr = "CASE "
+                        "WHEN %s.type='number' THEN 3 "
+                        "WHEN %s.type='bigint' THEN 4 "
+                        "WHEN %s.type='bigdec' THEN 5 "
+                        "WHEN %s.type='bigfloat' THEN 6 "
+                        "WHEN %s.type='unbound' THEN 11 "
+                        "ELSE 3 END";
+                    dstr stype; dstr_init(&stype);
+                    dstr_catf(&stype, stored_type_expr, nva, nva, nva, nva, nva);
+
                     if (strcmp(op, ">") == 0) {
-                        dstr_catf(out, " (%s.hi > %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) > 0)",
-                                  na, q_lo, na, na, na, q_lo, q_hi, q_str_sql.buf);
+                        dstr_catf(out, " (%s.hi > %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) > 0)",
+                                  na, q_lo, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
                     } else if (strcmp(op, ">=") == 0) {
-                        dstr_catf(out, " (%s.hi >= %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) >= 0)",
-                                  na, q_lo, na, na, na, q_lo, q_hi, q_str_sql.buf);
+                        dstr_catf(out, " (%s.hi >= %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) >= 0)",
+                                  na, q_lo, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
                     } else if (strcmp(op, "<") == 0) {
-                        dstr_catf(out, " (%s.lo < %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) < 0)",
-                                  na, q_hi, na, na, na, q_lo, q_hi, q_str_sql.buf);
+                        dstr_catf(out, " (%s.lo < %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) < 0)",
+                                  na, q_hi, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
                     } else if (strcmp(op, "<=") == 0) {
-                        dstr_catf(out, " (%s.lo <= %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) <= 0)",
-                                  na, q_hi, na, na, na, q_lo, q_hi, q_str_sql.buf);
+                        dstr_catf(out, " (%s.lo <= %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) <= 0)",
+                                  na, q_hi, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
                     }
                     dstr_free(&q_str_sql);
+                    dstr_free(&stype);
                 }
                 dstr_free(&raw);
             }
@@ -522,6 +542,45 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
                 if (strcmp(tstr, "bigint") == 0) dstr_catc(&out, 'N');
                 else if (strcmp(tstr, "bigdec") == 0) dstr_catc(&out, 'M');
                 else dstr_catc(&out, 'L');
+            }
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        sqlite3_free(sql);
+        return out.buf;
+    }
+
+    /* Unbound */
+    if (strcmp(tstr, "unbound") == 0) {
+        sql = sqlite3_mprintf("SELECT str FROM \"%snumber\" WHERE value_id = %lld", prefix, vid);
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *name = (const char *)sqlite3_column_text(stmt, 0);
+            dstr_catc(&out, '?');
+            if (name) {
+                /* Check if name needs quoting */
+                int needs_quote = 0;
+                if (name[0] && !((name[0] >= 'a' && name[0] <= 'z') || (name[0] >= 'A' && name[0] <= 'Z') || name[0] == '_'))
+                    needs_quote = 1;
+                if (!needs_quote) {
+                    for (int i = 1; name[i]; i++) {
+                        char ci = name[i];
+                        if (!((ci >= 'a' && ci <= 'z') || (ci >= 'A' && ci <= 'Z') ||
+                              (ci >= '0' && ci <= '9') || ci == '_'))
+                            { needs_quote = 1; break; }
+                    }
+                }
+                if (needs_quote) {
+                    dstr_catc(&out, '"');
+                    for (int i = 0; name[i]; i++) {
+                        if (name[i] == '"') dstr_cat(&out, "\\\"");
+                        else if (name[i] == '\\') dstr_cat(&out, "\\\\");
+                        else dstr_catc(&out, name[i]);
+                    }
+                    dstr_catc(&out, '"');
+                } else {
+                    dstr_cat(&out, name);
+                }
+            } else {
+                dstr_catc(&out, '_');
             }
         }
         if (stmt) sqlite3_finalize(stmt);
@@ -834,15 +893,19 @@ static void sql_qjson_decimal_cmp(sqlite3_context *ctx, int argc, sqlite3_value 
 }
 
 static void sql_qjson_cmp(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-    double a_lo = sqlite3_value_double(argv[0]);
-    double a_hi = sqlite3_value_double(argv[1]);
+    /* qjson_cmp(a_type, a_lo, a_str, a_hi, b_type, b_lo, b_str, b_hi) */
+    int a_type = sqlite3_value_int(argv[0]);
+    double a_lo = sqlite3_value_double(argv[1]);
     const char *a_str = (const char *)sqlite3_value_text(argv[2]);
-    int a_len = a_str ? sqlite3_value_bytes(argv[2]) : 0;
-    double b_lo = sqlite3_value_double(argv[3]);
-    double b_hi = sqlite3_value_double(argv[4]);
-    const char *b_str = (const char *)sqlite3_value_text(argv[5]);
-    int b_len = b_str ? sqlite3_value_bytes(argv[5]) : 0;
-    sqlite3_result_int(ctx, qjson_cmp(a_lo, a_hi, a_str, a_len, b_lo, b_hi, b_str, b_len));
+    int a_str_len = a_str ? sqlite3_value_bytes(argv[2]) : 0;
+    double a_hi = sqlite3_value_double(argv[3]);
+    int b_type = sqlite3_value_int(argv[4]);
+    double b_lo = sqlite3_value_double(argv[5]);
+    const char *b_str = (const char *)sqlite3_value_text(argv[6]);
+    int b_str_len = b_str ? sqlite3_value_bytes(argv[6]) : 0;
+    double b_hi = sqlite3_value_double(argv[7]);
+    sqlite3_result_int(ctx, qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
+                                       b_type, b_lo, b_str, b_str_len, b_hi));
 }
 
 /* ── Extension entry point ──────────────────────────────── */
@@ -855,7 +918,7 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
 
     sqlite3_create_function(db, "qjson_decimal_cmp", 2,
         SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_qjson_decimal_cmp, NULL, NULL);
-    sqlite3_create_function(db, "qjson_cmp", 6,
+    sqlite3_create_function(db, "qjson_cmp", 8,
         SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_qjson_cmp, NULL, NULL);
     sqlite3_create_function(db, "qjson_reconstruct", -1,
         SQLITE_UTF8, NULL, sql_qjson_reconstruct, NULL, NULL);

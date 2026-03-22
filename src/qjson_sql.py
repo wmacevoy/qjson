@@ -24,7 +24,7 @@ import math
 from decimal import Decimal
 
 # Import QJSON types for classification
-from qjson import BigInt, BigFloat, Blob
+from qjson import BigInt, BigFloat, Blob, Unbound
 
 
 # ── IEEE 754 nextUp / nextDown ───────────────────────────────
@@ -137,6 +137,8 @@ def _classify_value(value):
         return ("true", None)
     if value is False:
         return ("false", None)
+    if isinstance(value, Unbound):
+        return ("unbound", value.name)
     if isinstance(value, Blob):
         return ("blob", None)
     if isinstance(value, BigFloat):
@@ -365,6 +367,12 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
                 % (t_number, P, P, P, P), (vid, lo, s, hi))
             return vid
 
+        if type_str == "unbound":
+            _exec(
+                'INSERT INTO "%s" (value_id, lo, str, hi) VALUES (%s, %s, %s, %s)'
+                % (t_number, P, P, P, P), (vid, float('-inf'), "?" + raw, float('inf')))
+            return vid
+
         if type_str == "string":
             _exec(
                 'INSERT INTO "%s" (value_id, value) VALUES (%s, %s)'
@@ -437,6 +445,15 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
             if type_str == "bigfloat":
                 return BigFloat(raw)
 
+        if type_str == "unbound":
+            nr = _fetchone(
+                'SELECT str FROM "%s" WHERE value_id = %s'
+                % (t_number, P), (vid,))
+            name = nr[0] if nr and nr[0] else "?_"
+            if name.startswith("?"):
+                name = name[1:]
+            return Unbound(name)
+
         if type_str == "string":
             sr = _fetchone(
                 'SELECT value FROM "%s" WHERE value_id = %s'
@@ -488,7 +505,7 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
             return
         type_str = row[0]
 
-        if type_str in ("number", "bigint", "bigdec", "bigfloat"):
+        if type_str in ("number", "bigint", "bigdec", "bigfloat", "unbound"):
             _exec('DELETE FROM "%s" WHERE value_id = %s' % (t_number, P), (vid,))
         elif type_str == "string":
             _exec('DELETE FROM "%s" WHERE value_id = %s' % (t_string, P), (vid,))

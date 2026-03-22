@@ -74,6 +74,14 @@ function js64_encode(blob) {
   return parts.join("");
 }
 
+// ── Unbound type ────────────────────────────────────────────
+
+function Unbound(name) {
+  if (!(this instanceof Unbound)) return new Unbound(name);
+  this.$qjson = "unbound";
+  this.name = (name === undefined || name === null) ? "_" : String(name);
+}
+
 // ── Parser ──────────────────────────────────────────────────
 
 function qjson_parse(text) {
@@ -143,6 +151,7 @@ function qjson_parse(text) {
     if (c === "n" && text.substr(pos, 4) === "null") return literal("null", null);
     if (c === "0" && pos + 1 < len && (text[pos + 1] === "j" || text[pos + 1] === "J")) return blob();
     if (c === "-" || (c >= "0" && c <= "9")) return number();
+    if (c === "?") return unbound();
     throw new Error("Unexpected '" + c + "' at " + pos);
   }
 
@@ -236,6 +245,24 @@ function qjson_parse(text) {
     return { $qjson: "blob", data: js64_decode(raw) };
   }
 
+  function unbound() {
+    pos++; // skip '?'
+    var name;
+    if (pos < len && text[pos] === '"') {
+      name = string();
+    } else {
+      var start = pos;
+      while (pos < len) {
+        var uc = text[pos];
+        if ((uc >= "a" && uc <= "z") || (uc >= "A" && uc <= "Z") ||
+            (uc >= "0" && uc <= "9") || uc === "_") pos++;
+        else break;
+      }
+      name = pos > start ? text.substring(start, pos) : "_";
+    }
+    return new Unbound(name);
+  }
+
   function obj() {
     expect("{");
     var d = {};
@@ -296,6 +323,12 @@ function _fmt(obj) {
     if (obj !== obj || obj === Infinity || obj === -Infinity) return "null";
     return String(obj);
   }
+  // Unbound
+  if (typeof obj === "object" && obj !== null && obj.$qjson === "unbound") {
+    var uname = obj.name || "_";
+    if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(uname)) return "?" + uname;
+    return "?" + _esc(uname);
+  }
   // Blob
   if (typeof obj === "object" && obj !== null && obj.$qjson === "blob") {
     return "0j" + js64_encode(obj.data);
@@ -349,5 +382,6 @@ if (typeof exports !== "undefined") {
   exports.qjson_stringify = qjson_stringify;
   exports.js64_encode = js64_encode;
   exports.js64_decode = js64_decode;
+  exports.Unbound = Unbound;
 }
-export { qjson_parse, qjson_stringify, js64_encode, js64_decode };
+export { qjson_parse, qjson_stringify, js64_encode, js64_decode, Unbound };

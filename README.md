@@ -187,8 +187,8 @@ qjson_val *v = qjson_parse(&a, text, len);
 double lo, hi;
 qjson_project("0.1", 3, &lo, &hi);  // [0.0999..., 0.1000...]
 
-int cmp = qjson_cmp(a_lo, a_hi, a_str, a_len,
-                     b_lo, b_hi, b_str, b_len);
+int cmp = qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
+                     b_type, b_lo, b_str, b_str_len, b_hi);
 ```
 
 ## QJSON types
@@ -200,6 +200,7 @@ int cmp = qjson_cmp(a_lo, a_hi, a_str, a_len,
 | `M` | BigDecimal | `67432.50M` | string fallback | `Decimal` |
 | `L` | BigFloat | `3.14159L` | string fallback | `BigFloat` |
 | `0j` | Blob | `0jSGVsbG8` | `{$qjson:"blob"}` | `Blob` |
+| `?` | Unbound | `?X`, `?"name"` | `{$qjson:"unbound"}` | `Unbound` |
 
 Plus: line/block/nested comments, trailing commas, unquoted keys.
 
