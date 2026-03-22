@@ -745,3 +745,37 @@ resolves 99.999% of the remainder.  `qjson_cmp` (backed by libbf
 in SQLite or NUMERIC in PostgreSQL) fires only for the rare
 overlap zone where two inexact values share the same IEEE double
 brackets.
+
+### Deep path example
+
+Paths and WHERE clauses can be arbitrarily deep.  Each `.key`
+step adds exactly 2 JOINs — the cost is predictable.
+
+```python
+# Store deeply nested document
+doc = {'config': {'sensors': {'array': [
+    {'id': 'tc-7', 'cal': Decimal('0.003'), 'readings': [22.5, 23.1]},
+    {'id': 'tc-8', 'cal': Decimal('0.007'), 'readings': [30.0, 31.2]},
+]}}}
+
+# Query 4 levels deep with AND
+results = select(conn, root_id, '.config.sensors.array[K]',
+    where_expr='.config.sensors.array[K].cal > 0.005M')
+# → tc-8 element
+```
+
+```sql
+-- Same query in SQLite (embedded translator)
+SELECT qjson FROM qjson_select
+WHERE root_id = 1
+  AND select_path = '.config.sensors.array[K]'
+  AND where_expr = '.config.sensors.array[K].cal > 0.005M';
+
+-- PostgreSQL (embedded translator)
+SELECT * FROM qjson_select(1,
+    '.config.sensors.array[K]',
+    '.config.sensors.array[K].cal > 0.005M');
+```
+
+Key names and string values have no length limit — all
+allocations are dynamic.

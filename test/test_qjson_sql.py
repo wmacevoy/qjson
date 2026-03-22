@@ -302,6 +302,95 @@ def test_sqlite_custom_prefix():
     print('  SQLite custom prefix: OK')
 
 
+def test_large_keys_and_deep_paths():
+    """Stress test: large key names, deep nesting, long values."""
+    import sqlite3 as _sqlite3
+    import json
+
+    conn = _sqlite3.connect(':memory:')
+    has_ext = False
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension('./qjson_ext')
+        has_ext = True
+    except Exception:
+        pass
+
+    a = qjson_sql_adapter(conn)
+    a['setup']()
+
+    # Large key name (500 chars)
+    long_key = 'a' * 500
+    vid = a['store']({long_key: 42})
+    a['commit']()
+    v = a['load'](vid)
+    assert v[long_key] == 42.0
+
+    if has_ext:
+        from qjson_query import qjson_select
+        r = conn.execute('SELECT qjson_reconstruct(?, ?)',
+                         (vid, 'qjson_')).fetchone()[0]
+        assert long_key in r
+        rows = conn.execute(
+            'SELECT qjson FROM qjson_select WHERE root_id=? AND select_path=?',
+            (vid, '.' + long_key)).fetchall()
+        assert len(rows) == 1
+
+    # Deep nesting (20 levels)
+    deep = {'v': 'leaf'}
+    for _ in range(20):
+        deep = {'d': deep}
+    vid = a['store'](deep)
+    a['commit']()
+
+    if has_ext:
+        path = '.d' * 20 + '.v'
+        rows = conn.execute(
+            'SELECT qjson FROM qjson_select WHERE root_id=? AND select_path=?',
+            (vid, path)).fetchall()
+        assert len(rows) == 1 and rows[0][0] == '"leaf"'
+
+    # Large array (50 elements) with WHERE
+    big_arr = [{'idx': i, 'val': i * 0.1} for i in range(50)]
+    vid = a['store']({'data': big_arr})
+    a['commit']()
+
+    if has_ext:
+        rows = conn.execute(
+            'SELECT qjson FROM qjson_select WHERE root_id=? AND select_path=? AND where_expr=?',
+            (vid, '.data[K]', '.data[K].idx > 45')).fetchall()
+        assert len(rows) == 4  # idx 46,47,48,49
+
+    # Long string value (1200 chars)
+    long_str = 'hello ' * 200
+    vid = a['store']({'msg': long_str})
+    a['commit']()
+    v = a['load'](vid)
+    assert v['msg'] == long_str
+
+    # Deep path + AND WHERE
+    doc = {'l1': {'l2': {'l3': {'items': [
+        {'x': 1, 'y': 10},
+        {'x': 2, 'y': 20},
+        {'x': 3, 'y': 30},
+    ]}}}}
+    vid = a['store'](doc)
+    a['commit']()
+
+    if has_ext:
+        rows = conn.execute(
+            'SELECT qjson FROM qjson_select WHERE root_id=? AND select_path=? AND where_expr=?',
+            (vid, '.l1.l2.l3.items[K]',
+             '.l1.l2.l3.items[K].x > 1 AND .l1.l2.l3.items[K].y < 30')).fetchall()
+        assert len(rows) == 1
+        obj = json.loads(rows[0][0])
+        assert obj['x'] == 2 and obj['y'] == 20
+
+    conn.close()
+    ext_note = ' (with embedded translator)' if has_ext else ''
+    print('  Large keys, deep paths, long values%s: OK' % ext_note)
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -314,6 +403,7 @@ if __name__ == '__main__':
     run_adapter_tests(qjson_sql_adapter(':memory:'), 'SQLite')
     test_sqlite_interval_storage()
     test_sqlite_custom_prefix()
+    test_large_keys_and_deep_paths()
 
     if '--postgres' in sys.argv:
         print('\nPostgreSQL tests:')

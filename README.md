@@ -219,6 +219,21 @@ WHERE: `==`, `!=`, `>`, `>=`, `<`, `<=`, `AND`, `OR`, `NOT`, `()`.
 Results include both `value_id` (for further SQL operations) and
 reconstructed QJSON text.
 
+Paths can be arbitrarily deep — each step is a fixed JOIN:
+
+```sql
+-- SQLite (embedded translator)
+SELECT qjson FROM qjson_select
+WHERE root_id = 1
+  AND select_path = '.config.sensors.array[K]'
+  AND where_expr = '.config.sensors.array[K].cal > 0.005M';
+
+-- PostgreSQL (embedded translator)
+SELECT * FROM qjson_select(1,
+    '.config.sensors.array[K]',
+    '.config.sensors.array[K].cal > 0.005M');
+```
+
 ## Project layout
 
 ```
