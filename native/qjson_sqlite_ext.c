@@ -57,12 +57,17 @@ static void dstr_catc(dstr *s, char c) {
 }
 
 static void dstr_catf(dstr *s, const char *fmt, ...) {
-    char tmp[2048];
-    va_list ap;
+    va_list ap, ap2;
     va_start(ap, fmt);
-    vsnprintf(tmp, sizeof(tmp), fmt, ap);
+    va_copy(ap2, ap);
+    int n = vsnprintf(NULL, 0, fmt, ap);
     va_end(ap);
-    dstr_cat(s, tmp);
+    if (n > 0) {
+        dstr_ensure(s, n);
+        vsnprintf(s->buf + s->len, n + 1, fmt, ap2);
+        s->len += n;
+    }
+    va_end(ap2);
 }
 
 static void dstr_free(dstr *s) {
