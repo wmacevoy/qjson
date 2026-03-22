@@ -81,9 +81,22 @@ enum { STEP_KEY=1, STEP_INDEX, STEP_VAR, STEP_ITER };
 
 typedef struct {
     int type;
-    char val[128];
+    char *val;   /* dynamically allocated */
     int ival;
 } path_step;
+
+static char *dstr_extract_range(const char *s, int start, int end) {
+    int n = end - start;
+    char *r = sqlite3_malloc(n + 1);
+    memcpy(r, s + start, n);
+    r[n] = '\0';
+    return r;
+}
+
+static void free_steps(path_step *steps, int n) {
+    for (int i = 0; i < n; i++)
+        if (steps[i].val) { sqlite3_free(steps[i].val); steps[i].val = NULL; }
+}
 
 static int parse_path(const char *expr, path_step *steps, int max_steps) {
     int n = 0, pos = 0, len = (int)strlen(expr);
@@ -91,27 +104,23 @@ static int parse_path(const char *expr, path_step *steps, int max_steps) {
         if (expr[pos] == '.') {
             pos++;
             if (pos < len && expr[pos] == '[') {
-                /* .[] or .[Var] */
                 pos++;
                 if (pos < len && expr[pos] == ']') {
                     steps[n].type = STEP_ITER;
-                    steps[n].val[0] = '\0';
+                    steps[n].val = NULL;
                     pos++; n++;
                 } else {
-                    int s = 0;
-                    while (pos < len && expr[pos] != ']' && s < 126)
-                        steps[n].val[s++] = expr[pos++];
-                    steps[n].val[s] = '\0';
-                    if (pos < len) pos++; /* skip ] */
+                    int s = pos;
+                    while (pos < len && expr[pos] != ']') pos++;
+                    steps[n].val = dstr_extract_range(expr, s, pos);
+                    if (pos < len) pos++;
                     steps[n].type = STEP_VAR;
                     n++;
                 }
             } else {
-                /* .key */
-                int s = 0;
-                while (pos < len && (isalnum(expr[pos]) || expr[pos] == '_') && s < 126)
-                    steps[n].val[s++] = expr[pos++];
-                steps[n].val[s] = '\0';
+                int s = pos;
+                while (pos < len && (isalnum(expr[pos]) || expr[pos] == '_')) pos++;
+                steps[n].val = dstr_extract_range(expr, s, pos);
                 steps[n].type = STEP_KEY;
                 n++;
             }
@@ -119,23 +128,20 @@ static int parse_path(const char *expr, path_step *steps, int max_steps) {
             pos++;
             if (pos < len && expr[pos] == ']') {
                 steps[n].type = STEP_ITER;
-                steps[n].val[0] = '\0';
+                steps[n].val = NULL;
                 pos++; n++;
             } else if (pos < len && isdigit(expr[pos])) {
-                int s = 0;
-                while (pos < len && isdigit(expr[pos]) && s < 126)
-                    steps[n].val[s++] = expr[pos++];
-                steps[n].val[s] = '\0';
+                int s = pos;
+                while (pos < len && isdigit(expr[pos])) pos++;
+                steps[n].val = dstr_extract_range(expr, s, pos);
                 steps[n].ival = atoi(steps[n].val);
                 if (pos < len && expr[pos] == ']') pos++;
                 steps[n].type = STEP_INDEX;
                 n++;
             } else {
-                /* [Var] */
-                int s = 0;
-                while (pos < len && expr[pos] != ']' && s < 126)
-                    steps[n].val[s++] = expr[pos++];
-                steps[n].val[s] = '\0';
+                int s = pos;
+                while (pos < len && expr[pos] != ']') pos++;
+                steps[n].val = dstr_extract_range(expr, s, pos);
                 if (pos < len) pos++;
                 steps[n].type = STEP_VAR;
                 n++;
@@ -150,13 +156,16 @@ static int parse_path(const char *expr, path_step *steps, int max_steps) {
 /* ── SQL builder ────────────────────────────────────────── */
 
 typedef struct {
+    char *name;
+    char alias[32]; /* alias is always short: "ai_N" */
+} var_binding;
+
+typedef struct {
     const char *prefix;
     int alias_num;
     dstr joins;
-    /* variable bindings: name→alias mapping (simple linear scan) */
-    int nvar;
-    char var_names[16][64];
-    char var_aliases[16][32];
+    int nvar, var_cap;
+    var_binding *vars;
 } sql_builder;
 
 static void sb_init(sql_builder *sb, const char *prefix) {
@@ -164,22 +173,41 @@ static void sb_init(sql_builder *sb, const char *prefix) {
     sb->alias_num = 0;
     dstr_init(&sb->joins);
     sb->nvar = 0;
+    sb->var_cap = 0;
+    sb->vars = NULL;
 }
 
-static void sb_free(sql_builder *sb) { dstr_free(&sb->joins); }
+static void sb_free(sql_builder *sb) {
+    dstr_free(&sb->joins);
+    for (int i = 0; i < sb->nvar; i++)
+        sqlite3_free(sb->vars[i].name);
+    sqlite3_free(sb->vars);
+}
 
 static const char *sb_find_var(sql_builder *sb, const char *name) {
     for (int i = 0; i < sb->nvar; i++)
-        if (strcmp(sb->var_names[i], name) == 0) return sb->var_aliases[i];
+        if (strcmp(sb->vars[i].name, name) == 0) return sb->vars[i].alias;
     return NULL;
 }
 
-/* Resolve a path, appending JOINs. Returns the final value_id SQL expression in out_vid. */
+static void sb_add_var(sql_builder *sb, const char *name, const char *alias) {
+    if (sb->nvar >= sb->var_cap) {
+        sb->var_cap = sb->var_cap ? sb->var_cap * 2 : 8;
+        sb->vars = sqlite3_realloc(sb->vars, sb->var_cap * sizeof(var_binding));
+    }
+    sb->vars[sb->nvar].name = sqlite3_mprintf("%s", name);
+    snprintf(sb->vars[sb->nvar].alias, 32, "%s", alias);
+    sb->nvar++;
+}
+
+/* Resolve a path, appending JOINs. Returns the final value_id expression
+   in out (caller-owned dstr, appended to). */
 static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
-                       const char *root_vid, char *out_vid, int out_sz)
+                       const char *root_vid, dstr *out_vid)
 {
-    char cur[128];
-    snprintf(cur, sizeof(cur), "%s", root_vid);
+    dstr cur;
+    dstr_init(&cur);
+    dstr_cat(&cur, root_vid);
 
     for (int i = 0; i < nsteps; i++) {
         sb->alias_num++;
@@ -191,9 +219,10 @@ static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
             dstr_catf(&sb->joins,
                 " JOIN \"%sobject\" %s ON %s.value_id = %s"
                 " JOIN \"%sobject_item\" %s ON %s.object_id = %s.id AND %s.key = '%s'",
-                sb->prefix, o, o, cur,
+                sb->prefix, o, o, cur.buf,
                 sb->prefix, oi, oi, o, oi, steps[i].val);
-            snprintf(cur, sizeof(cur), "%s.value_id", oi);
+            cur.len = 0; cur.buf[0] = '\0';
+            dstr_catf(&cur, "%s.value_id", oi);
 
         } else if (steps[i].type == STEP_INDEX) {
             char a[32], ai[32];
@@ -203,14 +232,16 @@ static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
             dstr_catf(&sb->joins,
                 " JOIN \"%sarray\" %s ON %s.value_id = %s"
                 " JOIN \"%sarray_item\" %s ON %s.array_id = %s.id AND %s.idx = %d",
-                sb->prefix, a, a, cur,
+                sb->prefix, a, a, cur.buf,
                 sb->prefix, ai, ai, a, ai, steps[i].ival);
-            snprintf(cur, sizeof(cur), "%s.value_id", ai);
+            cur.len = 0; cur.buf[0] = '\0';
+            dstr_catf(&cur, "%s.value_id", ai);
 
         } else if (steps[i].type == STEP_VAR) {
             const char *existing = sb_find_var(sb, steps[i].val);
             if (existing) {
-                snprintf(cur, sizeof(cur), "%s.value_id", existing);
+                cur.len = 0; cur.buf[0] = '\0';
+                dstr_catf(&cur, "%s.value_id", existing);
             } else {
                 char a[32], ai[32];
                 snprintf(a, sizeof(a), "a_%d", sb->alias_num);
@@ -219,14 +250,11 @@ static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
                 dstr_catf(&sb->joins,
                     " JOIN \"%sarray\" %s ON %s.value_id = %s"
                     " JOIN \"%sarray_item\" %s ON %s.array_id = %s.id",
-                    sb->prefix, a, a, cur,
+                    sb->prefix, a, a, cur.buf,
                     sb->prefix, ai, ai, a);
-                if (sb->nvar < 16) {
-                    strncpy(sb->var_names[sb->nvar], steps[i].val, 63);
-                    strncpy(sb->var_aliases[sb->nvar], ai, 31);
-                    sb->nvar++;
-                }
-                snprintf(cur, sizeof(cur), "%s.value_id", ai);
+                sb_add_var(sb, steps[i].val, ai);
+                cur.len = 0; cur.buf[0] = '\0';
+                dstr_catf(&cur, "%s.value_id", ai);
             }
 
         } else if (steps[i].type == STEP_ITER) {
@@ -237,12 +265,17 @@ static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
             dstr_catf(&sb->joins,
                 " JOIN \"%sarray\" %s ON %s.value_id = %s"
                 " JOIN \"%sarray_item\" %s ON %s.array_id = %s.id",
-                sb->prefix, a, a, cur,
+                sb->prefix, a, a, cur.buf,
                 sb->prefix, ai, ai, a);
-            snprintf(cur, sizeof(cur), "%s.value_id", ai);
+            cur.len = 0; cur.buf[0] = '\0';
+            dstr_catf(&cur, "%s.value_id", ai);
         }
     }
-    snprintf(out_vid, out_sz, "%s", cur);
+    /* Copy result to out_vid */
+    out_vid->len = 0;
+    if (out_vid->buf) out_vid->buf[0] = '\0';
+    dstr_cat(out_vid, cur.buf);
+    dstr_free(&cur);
 }
 
 /* ── WHERE compiler ─────────────────────────────────────── */
@@ -286,16 +319,12 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
             while (pos < len && (expr[pos] == '.' || expr[pos] == '[' ||
                    isalnum(expr[pos]) || expr[pos] == '_' || expr[pos] == ']'))
                 pos++;
-            char path_str[256];
-            int plen = pos - pstart;
-            if (plen > 255) plen = 255;
-            memcpy(path_str, expr + pstart, plen);
-            path_str[plen] = '\0';
+            char *path_str = dstr_extract_range(expr, pstart, pos);
 
             /* skip whitespace */
             while (pos < len && isspace(expr[pos])) pos++;
 
-            /* operator */
+            /* operator (always short: ==, !=, <, >, <=, >=) */
             char op[4] = {0};
             int oi = 0;
             while (pos < len && (expr[pos] == '=' || expr[pos] == '!' ||
@@ -306,86 +335,82 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
             /* skip whitespace */
             while (pos < len && isspace(expr[pos])) pos++;
 
-            /* value */
-            char val[256] = {0};
-            char val_type = 'n'; /* n=number, s=string, l=literal */
+            /* value — dynamically collected */
+            dstr val; dstr_init(&val);
+            char val_type = 'n';
             if (expr[pos] == '"') {
-                /* string */
-                pos++; int vi = 0;
-                while (pos < len && expr[pos] != '"' && vi < 254) {
-                    if (expr[pos] == '\\') { pos++; }
-                    val[vi++] = expr[pos++];
+                pos++;
+                while (pos < len && expr[pos] != '"') {
+                    if (expr[pos] == '\\') pos++;
+                    dstr_catc(&val, expr[pos++]);
                 }
-                val[vi] = '\0';
-                if (pos < len) pos++; /* skip closing " */
+                if (pos < len) pos++;
                 val_type = 's';
             } else if (pos + 4 <= len && strncmp(expr + pos, "true", 4) == 0 &&
                        (pos + 4 >= len || !isalpha(expr[pos+4]))) {
-                strcpy(val, "true"); val_type = 'l'; pos += 4;
+                dstr_cat(&val, "true"); val_type = 'l'; pos += 4;
             } else if (pos + 5 <= len && strncmp(expr + pos, "false", 5) == 0 &&
                        (pos + 5 >= len || !isalpha(expr[pos+5]))) {
-                strcpy(val, "false"); val_type = 'l'; pos += 5;
+                dstr_cat(&val, "false"); val_type = 'l'; pos += 5;
             } else if (pos + 4 <= len && strncmp(expr + pos, "null", 4) == 0 &&
                        (pos + 4 >= len || !isalpha(expr[pos+4]))) {
-                strcpy(val, "null"); val_type = 'l'; pos += 4;
+                dstr_cat(&val, "null"); val_type = 'l'; pos += 4;
             } else {
-                /* number (possibly with N/M/L suffix) */
-                int vi = 0;
                 while (pos < len && (isdigit(expr[pos]) || expr[pos] == '.' ||
                        expr[pos] == '-' || expr[pos] == '+' || expr[pos] == 'e' ||
                        expr[pos] == 'E' || expr[pos] == 'N' || expr[pos] == 'M' ||
                        expr[pos] == 'L' || expr[pos] == 'n' || expr[pos] == 'm' ||
-                       expr[pos] == 'l') && vi < 254)
-                    val[vi++] = expr[pos++];
-                val[vi] = '\0';
+                       expr[pos] == 'l'))
+                    dstr_catc(&val, expr[pos++]);
                 val_type = 'n';
             }
 
             /* resolve path */
             path_step wsteps[32];
             int nwsteps = parse_path(path_str, wsteps, 32);
-            char wvid[128];
-            sb_resolve(sb, wsteps, nwsteps, "root.id", wvid, sizeof(wvid));
+            dstr wvid; dstr_init(&wvid);
+            sb_resolve(sb, wsteps, nwsteps, "root.id", &wvid);
+            free_steps(wsteps, nwsteps);
+            sqlite3_free(path_str);
 
             /* emit comparison */
             if (val_type == 'l') {
-                /* boolean/null: compare on type */
                 sb->alias_num++;
                 char va[32]; snprintf(va, sizeof(va), "wv_%d", sb->alias_num);
                 dstr_catf(&sb->joins, " JOIN \"%svalue\" %s ON %s.id = %s",
-                          sb->prefix, va, va, wvid);
+                          sb->prefix, va, va, wvid.buf);
                 if (strcmp(op, "==") == 0)
-                    dstr_catf(out, " %s.type = '%s'", va, val);
+                    dstr_catf(out, " %s.type = '%s'", va, val.buf);
                 else
-                    dstr_catf(out, " %s.type != '%s'", va, val);
+                    dstr_catf(out, " %s.type != '%s'", va, val.buf);
             } else if (val_type == 's') {
-                /* string comparison */
                 sb->alias_num++;
                 char sva[32]; snprintf(sva, sizeof(sva), "wsv_%d", sb->alias_num);
                 dstr_catf(&sb->joins, " JOIN \"%sstring\" %s ON %s.value_id = %s",
-                          sb->prefix, sva, sva, wvid);
+                          sb->prefix, sva, sva, wvid.buf);
                 if (strcmp(op, "==") == 0)
-                    dstr_catf(out, " %s.value = '%s'", sva, val);
+                    dstr_catf(out, " %s.value = '%s'", sva, val.buf);
                 else
-                    dstr_catf(out, " %s.value != '%s'", sva, val);
+                    dstr_catf(out, " %s.value != '%s'", sva, val.buf);
             } else {
-                /* numeric comparison with interval pushdown */
-                char raw[256];
-                strncpy(raw, val, 255); raw[255] = '\0';
-                int rlen = (int)strlen(raw);
-                if (rlen > 0 && (raw[rlen-1] == 'N' || raw[rlen-1] == 'M' ||
-                    raw[rlen-1] == 'L' || raw[rlen-1] == 'n' || raw[rlen-1] == 'm' ||
-                    raw[rlen-1] == 'l'))
-                    raw[rlen-1] = '\0';
+                /* numeric: strip suffix, project interval */
+                dstr raw; dstr_init(&raw);
+                dstr_cat(&raw, val.buf);
+                if (raw.len > 0) {
+                    char last = raw.buf[raw.len - 1];
+                    if (last == 'N' || last == 'M' || last == 'L' ||
+                        last == 'n' || last == 'm' || last == 'l')
+                        raw.buf[--raw.len] = '\0';
+                }
 
                 double q_lo, q_hi;
-                qjson_project(raw, (int)strlen(raw), &q_lo, &q_hi);
+                qjson_project(raw.buf, raw.len, &q_lo, &q_hi);
                 int exact = (q_lo == q_hi);
 
                 sb->alias_num++;
                 char na[32]; snprintf(na, sizeof(na), "wn_%d", sb->alias_num);
                 dstr_catf(&sb->joins, " JOIN \"%snumber\" %s ON %s.value_id = %s",
-                          sb->prefix, na, na, wvid);
+                          sb->prefix, na, na, wvid.buf);
 
                 if (strcmp(op, "==") == 0) {
                     if (exact)
@@ -393,35 +418,39 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                                   na, q_lo, na, q_hi, na);
                     else
                         dstr_catf(out, " (%s.lo = %.17g AND %s.hi = %.17g AND %s.str = '%s')",
-                                  na, q_lo, na, q_hi, na, raw);
+                                  na, q_lo, na, q_hi, na, raw.buf);
                 } else if (strcmp(op, "!=") == 0) {
                     if (exact)
                         dstr_catf(out, " NOT (%s.lo = %.17g AND %s.hi = %.17g AND %s.str IS NULL)",
                                   na, q_lo, na, q_hi, na);
                     else
                         dstr_catf(out, " NOT (%s.lo = %.17g AND %s.hi = %.17g AND %s.str = '%s')",
-                                  na, q_lo, na, q_hi, na, raw);
+                                  na, q_lo, na, q_hi, na, raw.buf);
                 } else {
                     /* Ordering: bracket pre-filter + qjson_cmp exact fallback */
-                    char q_str_sql[280];
-                    if (exact) snprintf(q_str_sql, sizeof(q_str_sql), "NULL");
-                    else       snprintf(q_str_sql, sizeof(q_str_sql), "'%s'", raw);
+                    dstr q_str_sql; dstr_init(&q_str_sql);
+                    if (exact) dstr_cat(&q_str_sql, "NULL");
+                    else       dstr_catf(&q_str_sql, "'%s'", raw.buf);
 
                     if (strcmp(op, ">") == 0) {
                         dstr_catf(out, " (%s.hi > %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) > 0)",
-                                  na, q_lo, na, na, na, q_lo, q_hi, q_str_sql);
+                                  na, q_lo, na, na, na, q_lo, q_hi, q_str_sql.buf);
                     } else if (strcmp(op, ">=") == 0) {
                         dstr_catf(out, " (%s.hi >= %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) >= 0)",
-                                  na, q_lo, na, na, na, q_lo, q_hi, q_str_sql);
+                                  na, q_lo, na, na, na, q_lo, q_hi, q_str_sql.buf);
                     } else if (strcmp(op, "<") == 0) {
                         dstr_catf(out, " (%s.lo < %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) < 0)",
-                                  na, q_hi, na, na, na, q_lo, q_hi, q_str_sql);
+                                  na, q_hi, na, na, na, q_lo, q_hi, q_str_sql.buf);
                     } else if (strcmp(op, "<=") == 0) {
                         dstr_catf(out, " (%s.lo <= %.17g AND qjson_cmp(%s.lo, %s.hi, %s.str, %.17g, %.17g, %s) <= 0)",
-                                  na, q_hi, na, na, na, q_lo, q_hi, q_str_sql);
+                                  na, q_hi, na, na, na, q_lo, q_hi, q_str_sql.buf);
                     }
+                    dstr_free(&q_str_sql);
                 }
+                dstr_free(&raw);
             }
+            dstr_free(&val);
+            dstr_free(&wvid);
             continue;
         }
 
@@ -436,17 +465,19 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
     dstr_init(&out);
 
     /* Get type */
-    char sql[256];
-    snprintf(sql, sizeof(sql), "SELECT type FROM \"%svalue\" WHERE id = %lld", prefix, vid);
-    sqlite3_stmt *stmt;
+    char *sql = sqlite3_mprintf("SELECT type FROM \"%svalue\" WHERE id = %lld", prefix, vid);
+    sqlite3_stmt *stmt = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK || sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_free(sql);
         if (stmt) sqlite3_finalize(stmt);
         dstr_cat(&out, "null");
         return out.buf;
     }
     const char *type = (const char *)sqlite3_column_text(stmt, 0);
-    char tstr[32]; strncpy(tstr, type, 31); tstr[31] = '\0';
+    char tstr[16]; strncpy(tstr, type ? type : "", 15); tstr[15] = '\0';
     sqlite3_finalize(stmt);
+    sqlite3_free(sql);
+    sql = NULL;
 
     if (strcmp(tstr, "null") == 0)  { dstr_cat(&out, "null"); return out.buf; }
     if (strcmp(tstr, "true") == 0)  { dstr_cat(&out, "true"); return out.buf; }
@@ -455,7 +486,7 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
     /* Number types */
     if (strcmp(tstr, "number") == 0 || strcmp(tstr, "bigint") == 0 ||
         strcmp(tstr, "bigdec") == 0 || strcmp(tstr, "bigfloat") == 0) {
-        snprintf(sql, sizeof(sql), "SELECT lo, str, hi FROM \"%snumber\" WHERE value_id = %lld", prefix, vid);
+        sql = sqlite3_mprintf("SELECT lo, str, hi FROM \"%snumber\" WHERE value_id = %lld", prefix, vid);
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
             double lo = sqlite3_column_double(stmt, 0);
             const char *str = (const char *)sqlite3_column_text(stmt, 1);
@@ -494,12 +525,13 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
             }
         }
         if (stmt) sqlite3_finalize(stmt);
+        sqlite3_free(sql);
         return out.buf;
     }
 
     /* String */
     if (strcmp(tstr, "string") == 0) {
-        snprintf(sql, sizeof(sql), "SELECT value FROM \"%sstring\" WHERE value_id = %lld", prefix, vid);
+        sql = sqlite3_mprintf("SELECT value FROM \"%sstring\" WHERE value_id = %lld", prefix, vid);
         dstr_catc(&out, '"');
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW) {
             const char *sv = (const char *)sqlite3_column_text(stmt, 0);
@@ -516,21 +548,24 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
             }
         }
         if (stmt) sqlite3_finalize(stmt);
+        sqlite3_free(sql);
         dstr_catc(&out, '"');
         return out.buf;
     }
 
     /* Array */
     if (strcmp(tstr, "array") == 0) {
-        snprintf(sql, sizeof(sql), "SELECT id FROM \"%sarray\" WHERE value_id = %lld", prefix, vid);
+        sqlite3_free(sql);
+        sql = sqlite3_mprintf("SELECT id FROM \"%sarray\" WHERE value_id = %lld", prefix, vid);
         sqlite3_int64 arr_id = 0;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW)
             arr_id = sqlite3_column_int64(stmt, 0);
         if (stmt) sqlite3_finalize(stmt);
-        if (!arr_id) { dstr_cat(&out, "[]"); return out.buf; }
+        if (!arr_id) { sqlite3_free(sql); dstr_cat(&out, "[]"); return out.buf; }
 
         dstr_catc(&out, '[');
-        snprintf(sql, sizeof(sql), "SELECT value_id FROM \"%sarray_item\" WHERE array_id = %lld ORDER BY idx", prefix, arr_id);
+        sqlite3_free(sql);
+        sql = sqlite3_mprintf("SELECT value_id FROM \"%sarray_item\" WHERE array_id = %lld ORDER BY idx", prefix, arr_id);
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             int first = 1;
             while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -543,21 +578,24 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
             }
         }
         if (stmt) sqlite3_finalize(stmt);
+        sqlite3_free(sql);
         dstr_catc(&out, ']');
         return out.buf;
     }
 
     /* Object */
     if (strcmp(tstr, "object") == 0) {
-        snprintf(sql, sizeof(sql), "SELECT id FROM \"%sobject\" WHERE value_id = %lld", prefix, vid);
+        sqlite3_free(sql);
+        sql = sqlite3_mprintf("SELECT id FROM \"%sobject\" WHERE value_id = %lld", prefix, vid);
         sqlite3_int64 obj_id = 0;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK && sqlite3_step(stmt) == SQLITE_ROW)
             obj_id = sqlite3_column_int64(stmt, 0);
         if (stmt) sqlite3_finalize(stmt);
-        if (!obj_id) { dstr_cat(&out, "{}"); return out.buf; }
+        if (!obj_id) { sqlite3_free(sql); dstr_cat(&out, "{}"); return out.buf; }
 
         dstr_catc(&out, '{');
-        snprintf(sql, sizeof(sql), "SELECT key, value_id FROM \"%sobject_item\" WHERE object_id = %lld ORDER BY key", prefix, obj_id);
+        sqlite3_free(sql);
+        sql = sqlite3_mprintf("SELECT key, value_id FROM \"%sobject_item\" WHERE object_id = %lld ORDER BY key", prefix, obj_id);
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             int first = 1;
             while (sqlite3_step(stmt) == SQLITE_ROW) {
@@ -578,6 +616,7 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
             }
         }
         if (stmt) sqlite3_finalize(stmt);
+        sqlite3_free(sql);
         dstr_catc(&out, '}');
         return out.buf;
     }
@@ -698,8 +737,9 @@ static int qs_filter(sqlite3_vtab_cursor *cur, int idxNum,
 
     path_step steps[32];
     int nsteps = parse_path(select_path, steps, 32);
-    char select_vid[128];
-    sb_resolve(&sb, steps, nsteps, "root.id", select_vid, sizeof(select_vid));
+    dstr select_vid; dstr_init(&select_vid);
+    sb_resolve(&sb, steps, nsteps, "root.id", &select_vid);
+    free_steps(steps, nsteps);
 
     dstr where_sql;
     dstr_init(&where_sql);
@@ -709,7 +749,7 @@ static int qs_filter(sqlite3_vtab_cursor *cur, int idxNum,
     dstr query;
     dstr_init(&query);
     dstr_catf(&query, "SELECT %s AS result_vid FROM \"%svalue\" root %s WHERE root.id = %lld",
-              select_vid, prefix, sb.joins.buf ? sb.joins.buf : "", root_id);
+              select_vid.buf, prefix, sb.joins.buf ? sb.joins.buf : "", root_id);
     if (where_sql.len > 0)
         dstr_catf(&query, " AND (%s)", where_sql.buf);
 
@@ -736,6 +776,7 @@ static int qs_filter(sqlite3_vtab_cursor *cur, int idxNum,
 
     dstr_free(&query);
     dstr_free(&where_sql);
+    dstr_free(&select_vid);
     sb_free(&sb);
     return SQLITE_OK;
 }
