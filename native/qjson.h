@@ -119,7 +119,7 @@ int qjson_decimal_cmp(const char *a, int a_len, const char *b, int b_len);
    For SQL WHERE clauses, expand inline for index usage:
      a < b  →  (a_hi < b_lo) OR ((a_lo < b_hi) AND cmp(a,b) < 0)
      a == b →  (a_hi >= b_lo AND b_hi >= a_lo) AND cmp(a,b) = 0
-   See docs/qsql-intervals.md for all operators. */
+   See docs/qjson.md SQL representation for all operators. */
 int qjson_cmp(double a_lo, double a_hi, const char *a_str, int a_len,
               double b_lo, double b_hi, const char *b_str, int b_len);
 

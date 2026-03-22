@@ -1,6 +1,14 @@
 # QJSON
 
+[![Tests](https://github.com/wmacevoy/qjson/actions/workflows/test.yml/badge.svg)](https://github.com/wmacevoy/qjson/actions/workflows/test.yml)
+
 JSON superset with exact numerics and interval-projected SQL storage.
+
+```bash
+pip install qjson          # Python
+npm install qjson          # JavaScript
+docker pull ghcr.io/wmacevoy/qjson-postgres  # PostgreSQL with QJSON
+```
 
 ```javascript
 {
@@ -16,29 +24,31 @@ JSON superset with exact numerics and interval-projected SQL storage.
 
 Valid JSON is valid QJSON.
 
-## Three layers
+## Four layers
 
 **Format** — parse and stringify QJSON (C, JavaScript, Python).
 
 **Projection** — map any QJSON value to `[lo, str, hi]` IEEE double
-interval.  `lo` and `hi` bracket the exact value.  `str` preserves
-the exact representation.  `qjson_cmp` compares two projected values
-in 4 lines.
+interval.  `roundDown` and `roundUp` bracket the exact value.
+`str` preserves the exact representation when it's not an exact double.
 
-**SQL adapter** — store projected values in SQLite, SQLCipher, or
-PostgreSQL.  Configurable table prefix (default `qjson_`).  Indexed
-interval columns for fast range queries.  Exact numerics survive the
-full round-trip.
+**SQL adapter** — store any QJSON value tree in SQLite or PostgreSQL.
+Normalized schema with configurable prefix (default `qjson_`).
+Indexed interval columns for fast range queries.
+
+**Query translator** — jq-like path expressions compiled to SQL
+JOIN chains.  SELECT, UPDATE, WHERE with interval pushdown and
+exact comparison via libbf (SQLite) or NUMERIC (PostgreSQL).
 
 ## Quick start
 
 ### Parse and stringify
 
 ```javascript
-import { qjson_parse, qjson_stringify } from './src/qjson.js';
+import { qjson_parse, qjson_stringify } from 'qjson';       // or './src/qjson.js'
 
 var obj = qjson_parse('{ price: 67432.50M, ts: 1710000000N }');
-qjson_stringify(obj);  // '{"price":67432.50M,"ts":1710000000N}'
+qjson_stringify(obj);  // '{"price":"67432.50M","ts":1710000000N}'
 ```
 
 ```python
@@ -48,35 +58,121 @@ obj = parse('{ price: 67432.50M, ts: 1710000000N }')
 stringify(obj)  # '{"price":67432.50M,"ts":1710000000N}'
 ```
 
-### Interval projection
+### Store and query
 
-```javascript
-import { _qsql_argInterval } from './src/qsql.js';
+```python
+from qjson.sql import adapter
+from qjson.query import select, update
+from decimal import Decimal
+import sqlite3
 
-_qsql_argInterval({t:"n", v:0.1, r:"0.1M"})
-// → ["0.1", 0.09999999999999999, 0.10000000000000002]
-//   1-ULP bracket: exact value is between lo and hi
+conn = sqlite3.connect(':memory:')
+a = adapter(conn)
+a['setup']()
 
-_qsql_argInterval({t:"n", v:42})
-// → [null, 42, 42]
-//   point interval: 42 is exactly representable
+# Store a document
+root_id = a['store']({
+    'name': 'sensor-array',
+    'items': [
+        {'t': 10, 'y': 1.5, 'label': 'cold'},
+        {'t': 25, 'y': Decimal('2.718281828'), 'label': 'warm'},
+        {'t': 35, 'y': 3.5, 'label': 'hot'},
+        {'t': 50, 'y': 5.0, 'label': 'fire'},
+    ]
+})
+a['commit']()
+
+# SELECT — returns (value_id, bindings) tuples
+results = select(conn, root_id, '.items[K]',
+                 where_expr='.items[K].t > 30')
+for vid, bindings in results:
+    print(a['load'](vid))
+# {'label': 'hot', 't': 35.0, 'y': 3.5}
+# {'label': 'fire', 't': 50.0, 'y': 5.0}
+
+# UPDATE — set y = 3 where t > 30
+update(conn, root_id, '.items[K].y', 3,
+       where_expr='.items[K].t > 30')
+
+# AND / OR / NOT
+results = select(conn, root_id, '.items[K].label',
+    where_expr='.items[K].t > 20 AND .items[K].t < 40')
+# → 'warm', 'hot'
 ```
 
-### SQL storage
+### PostgreSQL (embedded translator)
+
+```sql
+-- Install the QJSON functions
+\i sql/qjson_pg.sql
+
+-- Query with QJSON output
+SELECT qjson FROM qjson_select(1, '.items[K]', '.items[K].t > 30');
+-- → '{"label":"hot","t":35,"y":3.5}'
+-- → '{"label":"fire","t":50,"y":5}'
+
+-- Get a specific field
+SELECT qjson FROM qjson_select(1, '.items[K].label', '.items[K].t == 25');
+-- → '"warm"'
+
+-- AND / OR
+SELECT qjson FROM qjson_select(1, '.items[K]',
+    '.items[K].t > 20 AND .items[K].t < 40');
+
+-- Reconstruct any stored value
+SELECT qjson_reconstruct(1, 'qjson_');
+
+-- Exact comparison (libbf-equivalent via NUMERIC)
+SELECT qjson_decimal_cmp('3.141592653589793238', '3.141592653589793239');
+-- → -1
+```
+
+### SQLite extension
+
+```bash
+make  # build qjson_ext.dylib/.so with libbf
+```
+
+```python
+import sqlite3
+conn = sqlite3.connect('mydb.sqlite')
+conn.enable_load_extension(True)
+conn.load_extension('./qjson_ext')
+
+# Now qjson_cmp() and qjson_decimal_cmp() are available in SQL
+conn.execute("""
+    SELECT * FROM qjson_number
+    WHERE qjson_cmp(lo, hi, str, ?, ?, ?) > 0
+""", (query_lo, query_hi, query_str))
+```
+
+### SQLCipher (encrypted storage)
+
+```python
+# Python — pass key to the adapter
+from qjson.sql import adapter
+
+a = adapter('encrypted.db', key='my-secret-key')
+a['setup']()
+vid = a['store']({'sensitive': True, 'balance': Decimal('1000000.50')})
+a['commit']()
+# Data encrypted at rest, queries work identically
+```
 
 ```javascript
-import { qsqlAdapter } from './src/qsql.js';
-
-var adapter = qsqlAdapter(db);  // any better-sqlite3-compatible db
+// JavaScript — better-sqlite3-sqlcipher or similar
+var adapter = qjsonSqlAdapter(db, { key: "my-secret-key" });
 adapter.setup();
-adapter.insert(key, "price", 3);  // → CREATE TABLE qjson_price_3 (...)
+adapter.store({ sensitive: true });
 ```
 
-```javascript
-// Custom prefix
-var adapter = qsqlAdapter(db, { prefix: "my_" });
-// → tables: my_price_3, my_threshold_4, ...
+```bash
+# Build extension for SQLCipher
+make qjson_ext_sqlcipher.dylib  # or .so on Linux
 ```
+
+Compatible with [sqlcipher-libressl](https://github.com/nickoala/sqlcipher-libressl)
+for native and WASM (browser) encrypted storage with OPFS or IndexedDB persistence.
 
 ### C API
 
@@ -101,52 +197,111 @@ int cmp = qjson_cmp(a_lo, a_hi, a_str, a_len,
 |--------|------|---------|---------|-------------|
 | (none) | JSON number | `42`, `3.14` | `number` | `int`/`float` |
 | `N` | BigInt | `1710000000N` | `BigInt` | `BigInt` |
-| `M` | BigDecimal | `67432.50M` | `{type:"M",value:...}` | `Decimal` |
-| `L` | BigFloat | `3.14159L` | `{type:"L",value:...}` | `BigFloat` |
-| `0j` | Blob | `0jSGVsbG8` | `Blob` | `Blob` |
+| `M` | BigDecimal | `67432.50M` | string fallback | `Decimal` |
+| `L` | BigFloat | `3.14159L` | string fallback | `BigFloat` |
+| `0j` | Blob | `0jSGVsbG8` | `{$qjson:"blob"}` | `Blob` |
 
 Plus: line/block/nested comments, trailing commas, unquoted keys.
+
+## Query language
+
+jq-like path expressions → SQL JOIN chains.
+
+| Syntax | Meaning |
+|--------|---------|
+| `.key` | object child by key |
+| `[n]` | array index |
+| `[K]` | variable binding (uppercase, shared across SELECT/WHERE) |
+| `.[]` | all array elements |
+
+WHERE: `==`, `!=`, `>`, `>=`, `<`, `<=`, `AND`, `OR`, `NOT`, `()`.
+
+Results include both `value_id` (for further SQL operations) and
+reconstructed QJSON text.
 
 ## Project layout
 
 ```
 src/
-  qjson.js / qjson.py     QJSON parser + serializer
-  qsql.js / qsql.py       Interval projection + SQL adapter
+  qjson.js / qjson.py          QJSON parser + serializer
+  qjson-sql.js / qjson_sql.py  SQL adapter (SQLite + PostgreSQL)
+  qjson_query.py                Query translator (path → SQL)
 
 native/
-  qjson.h / qjson.c       C: parse + stringify + project + cmp
-  libbf/                   Vendored (exact directed rounding)
+  qjson.h / qjson.c            C: parse + stringify + project + cmp
+  qjson_sqlite_ext.c            SQLite extension (libbf)
+  libbf/                        Vendored (exact directed rounding)
 
-docs/
-  qjson.md                 Format spec
-  qsql.md                  Storage model
+sql/
+  qjson_pg.sql                  PostgreSQL: translator + reconstruct
 
 test/
-  test-qjson.js            JS format tests
-  test_qjson.py            Python format tests
-  test_qjson.c             C format + projection tests
+  test-qjson.js                 JS format tests
+  test_qjson.py                 Python format tests
+  test_qjson.c                  C format + projection tests
+  test_qjson_sql.py             SQL adapter tests (SQLite + PG)
+
+examples/
+  wasm/                         Browser demo: QJSON + encrypted SQLCipher WASM
 ```
 
 ## Run tests
 
 ```bash
-# JavaScript
+# Format tests
 node test/test-qjson.js
-
-# Python
 python3 test/test_qjson.py
 
-# C
+# SQL adapter (SQLite)
+python3 test/test_qjson_sql.py
+
+# SQL adapter (SQLite + PostgreSQL)
+docker compose up -d postgres
+python3 test/test_qjson_sql.py --postgres
+docker compose down
+
+# Build SQLite extension + C tests
+make test
+
+# C only
 cc -O2 -std=c11 -frounding-math -o test_qjson test/test_qjson.c native/qjson.c -lm && ./test_qjson
 ```
+
+## Encryption at rest
+
+| Platform | Encryption | How |
+|----------|-----------|-----|
+| **SQLite / embedded** | SQLCipher (page-level) | `key='...'` parameter |
+| **Browser** | SQLCipher WASM + OPFS/IndexedDB | `QJSONDatabase.open({key: '...'})` |
+| **PostgreSQL** | Encrypted volume (LUKS, cloud EBS/PD) | Container with encrypted data dir |
+
+Column-level encryption (pgcrypto) must **not** be used — it would
+break interval indexing.  Encryption must be below the SQL layer.
+
+```bash
+# Production PostgreSQL with encrypted volume
+docker compose up -d postgres-encrypted
+```
+
+## Release artifacts
+
+Tagged releases (`v*`) produce:
+
+| Artifact | Contents |
+|----------|----------|
+| `qjson_ext-{platform}.so/dylib` | SQLite extension (linux-x64, linux-arm64, macos-arm64, macos-x64) |
+| PyPI `qjson` | `pip install qjson` — parser, SQL adapter, query translator |
+| npm `qjson` | `npm install qjson` — ES5 parser + SQL adapter |
+| `ghcr.io/.../qjson-postgres` | Docker image — PG 16 with QJSON functions pre-installed |
+| `qjson-c.tar.gz` | C library + libbf + Makefile |
+| `qjson_pg.sql` | PostgreSQL functions (translator + reconstruct) |
+| `qjson-wasm.tar.gz` | Browser adapter for SQLCipher WASM |
 
 ## Documentation
 
 | Doc | Scope |
 |-----|-------|
-| `docs/qjson.md` | QJSON spec: types, grammar, canonical form, JS64 blobs |
-| `docs/qsql.md` | SQL storage: `[lo, str, hi]` projection, comparison, WHERE efficiency |
+| `docs/qjson.md` | Full spec: types, grammar, canonical form, SQL schema, query language, encryption |
 
 ## License
 

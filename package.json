@@ -1,0 +1,23 @@
+{
+  "name": "qjson",
+  "version": "0.2.0",
+  "description": "QJSON: JSON superset with exact numerics and interval-projected SQL storage",
+  "main": "src/qjson.js",
+  "exports": {
+    ".": "./src/qjson.js",
+    "./sql": "./src/qjson-sql.js"
+  },
+  "files": [
+    "src/qjson.js",
+    "src/qjson-sql.js"
+  ],
+  "scripts": {
+    "test": "node test/test-qjson.js"
+  },
+  "keywords": ["json", "bigint", "bigdecimal", "interval", "sql", "sqlite", "exact"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wmacevoy/qjson.git"
+  }
+}

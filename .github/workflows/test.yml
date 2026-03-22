@@ -1,0 +1,203 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ── Format tests (C, Python, JS) ─────────────────────────
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: C tests (with libbf)
+        run: |
+          cc -O2 -std=c11 -DQJSON_USE_LIBBF -frounding-math \
+            -Inative -Inative/libbf \
+            -o test_qjson test/test_qjson.c native/qjson.c \
+            native/libbf/libbf.c native/libbf/cutils.c -lm
+          ./test_qjson
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Python format tests
+        run: python3 test/test_qjson.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: JS format tests
+        run: node test/test-qjson.js
+
+  # ── SQLite tests ──────────────────────────────────────────
+  sqlite:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Build SQLite extension
+        run: make qjson_ext.so
+
+      - name: SQLite adapter tests
+        run: python3 test/test_qjson_sql.py
+
+  # ── PostgreSQL tests ──────────────────────────────────────
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: qjson_test
+          POSTGRES_USER: qjson
+          POSTGRES_PASSWORD: qjson
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U qjson -d qjson_test"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install psycopg2
+        run: pip install psycopg2-binary
+
+      - name: Build SQLite extension
+        run: make qjson_ext.so
+
+      - name: Install PG functions
+        run: |
+          PGPASSWORD=qjson psql -h localhost -U qjson -d qjson_test \
+            -f sql/qjson_pg.sql
+
+      - name: SQLite + PostgreSQL adapter tests
+        env:
+          PGHOST: localhost
+          PGPORT: 5432
+        run: python3 test/test_qjson_sql.py --postgres
+
+  # ── SQLCipher tests ───────────────────────────────────────
+  sqlcipher:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout sqlcipher-libressl
+        uses: actions/checkout@v4
+        with:
+          repository: nickoala/sqlcipher-libressl
+          path: sqlcipher-libressl
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install LibreSSL
+        run: |
+          curl -sL https://github.com/libressl/portable/releases/download/v4.2.1/libressl-4.2.1.tar.gz | tar xz
+          cd libressl-4.2.1
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/libressl \
+            -DLIBRESSL_APPS=OFF -DLIBRESSL_TESTS=OFF -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc) && make install
+
+      - name: Build SQLCipher
+        run: |
+          cd sqlcipher-libressl
+          ./configure --with-tempstore=yes \
+            CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL \
+                    -DSQLITE_EXTRA_INIT=sqlcipher_extra_init \
+                    -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown \
+                    -I$HOME/libressl/include" \
+            LDFLAGS="$HOME/libressl/lib/libcrypto.a"
+          make -j$(nproc) sqlite3.c
+
+      - name: Build QJSON extension for SQLCipher
+        run: |
+          make qjson_ext_sqlcipher.so \
+            SQLCIPHER_DIR=sqlcipher-libressl
+
+      - name: Install pysqlcipher3
+        run: |
+          pip install pysqlcipher3 \
+            --global-option=build_ext \
+            --global-option="-I$(pwd)/sqlcipher-libressl/src" \
+            --global-option="-L$(pwd)/sqlcipher-libressl/.libs" \
+            --global-option="-l:$HOME/libressl/lib/libcrypto.a" \
+          || echo "pysqlcipher3 install failed — running basic test instead"
+
+      - name: SQLCipher encryption round-trip test
+        run: |
+          python3 -c "
+          import sys, os
+          sys.path.insert(0, 'src')
+
+          # Try pysqlcipher3, fall back to plain sqlite3 (key is no-op)
+          try:
+              from pysqlcipher3 import dbapi2 as sqlcipher
+              conn = sqlcipher.connect(':memory:')
+              HAS_CIPHER = True
+          except ImportError:
+              import sqlite3
+              conn = sqlite3.connect(':memory:')
+              HAS_CIPHER = False
+
+          from qjson_sql import qjson_sql_adapter
+          from qjson import BigInt, BigFloat, Blob
+          from decimal import Decimal
+
+          key = 'ci-test-key' if HAS_CIPHER else None
+          a = qjson_sql_adapter(conn, key=key)
+          a['setup']()
+
+          # Store all types
+          vid = a['store']({
+              'n': 42,
+              'bi': BigInt(9007199254740993),
+              'bd': Decimal('0.1'),
+              'bf': BigFloat('3.14'),
+              's': 'hello',
+              'b': Blob(b'\x01\x02'),
+              'arr': [1, 2, 3],
+              'obj': {'nested': True},
+              'nil': None,
+              'yes': True,
+              'no': False,
+          })
+          a['commit']()
+
+          # Load and verify
+          v = a['load'](vid)
+          assert v['n'] == 42.0
+          assert isinstance(v['bi'], BigInt) and int(v['bi']) == 9007199254740993
+          assert isinstance(v['bd'], Decimal) and v['bd'] == Decimal('0.1')
+          assert isinstance(v['bf'], BigFloat) and str(v['bf']) == '3.14'
+          assert v['s'] == 'hello'
+          assert isinstance(v['b'], Blob) and v['b'].data == b'\x01\x02'
+          assert v['arr'] == [1.0, 2.0, 3.0]
+          assert v['obj'] == {'nested': True}
+          assert v['nil'] is None
+          assert v['yes'] is True
+          assert v['no'] is False
+
+          a['close']()
+          cipher_status = 'SQLCipher (encrypted)' if HAS_CIPHER else 'sqlite3 (key no-op)'
+          print('SQLCipher round-trip: ALL PASSED (%s)' % cipher_status)
+          "

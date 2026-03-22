@@ -262,7 +262,7 @@ static void test_decimal_cmp(void) {
 
 /* -- Interval comparison logic -------------------------------- */
 /*
- * Implements the query pushdown formulas from docs/qsql-intervals.md:
+ * Implements the query pushdown formulas from docs/qjson.md:
  *   a <op> b = (interval_accept) OR ((interval_not_reject) AND cmp <op> 0)
  */
 

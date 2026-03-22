@@ -352,12 +352,62 @@ projection.
 ## SQL representation
 
 Normalized schema for storing arbitrary QJSON values in SQL.
+All table names share a configurable prefix (default `qjson_`).
 Null and boolean need no child table — the `type` column
 carries the full value.  All numeric types share one table
 with `[lo, str, hi]` interval projection.
 
+lo/hi columns must be 8-byte IEEE 754 doubles.  The SQL type
+name differs by database:
+
+| Database | 8-byte double | Binary data | Auto-increment PK | Param |
+|----------|---------------|-------------|-------------------|-------|
+| SQLite | `REAL` | `BLOB` | `INTEGER PRIMARY KEY` | `?` |
+| SQLCipher | `REAL` | `BLOB` | `INTEGER PRIMARY KEY` | `?` |
+| PostgreSQL | `DOUBLE PRECISION` | `BYTEA` | `SERIAL PRIMARY KEY` | `%s` |
+
+SQLCipher uses the same dialect as SQLite (identical SQL, same
+`REAL` = 8-byte IEEE 754).  The only difference is the encryption
+key set via `PRAGMA key` before any other operation.
+
+### Encryption at rest
+
+QJSON's interval columns (`lo`, `hi`) must remain indexable for
+the 3-tier comparison to work.  Encryption must happen **below**
+the SQL layer (page-level or disk-level), not at the column level.
+
+| Platform | Encryption | Indexes work | Key model |
+|----------|-----------|-------------|-----------|
+| SQLite + SQLCipher | Page-level | Yes | User-supplied per-database |
+| SQLCipher WASM | Page-level + OPFS/IndexedDB | Yes | User-supplied in browser |
+| PostgreSQL + FDE | Disk-level (LUKS, cloud EBS) | Yes | Infrastructure-managed |
+| PostgreSQL container | Encrypted volume mount | Yes | Container/host-managed |
+
+Column-level encryption (e.g. pgcrypto) must **not** be used on
+the `lo`/`hi` columns — it would make them unindexable and break
+interval pushdown.
+
+For PostgreSQL in production, use a container with an encrypted
+volume for the data directory:
+
+```yaml
+# docker-compose.yml
+services:
+  postgres:
+    image: postgres:16-alpine
+    volumes:
+      - pgdata:/var/lib/postgresql/data       # encrypted volume
+      - ./sql/qjson_pg.sql:/docker-entrypoint-initdb.d/01-qjson.sql:ro
+volumes:
+  pgdata:  # back with LUKS, encrypted EBS/PD, or host FDE
+```
+
+**SQLite**:
+
 ```sql
-CREATE TABLE value (
+-- prefix default: "qjson_"
+
+CREATE TABLE qjson_value (
     id   INTEGER PRIMARY KEY,
     type TEXT NOT NULL
     -- 'null', 'true', 'false',
@@ -365,67 +415,117 @@ CREATE TABLE value (
     -- 'string', 'blob', 'array', 'object'
 );
 
--- All numeric types: [lo, str, hi] projection.
--- str is NULL when lo == hi (exact double — 99.999% of rows).
--- value.type distinguishes number/bigint/bigdec/bigfloat.
-CREATE TABLE number_value (
+CREATE TABLE qjson_number (
     id       INTEGER PRIMARY KEY,
-    value_id INTEGER REFERENCES value(id),
-    lo       REAL,    -- round_down_ieee754(exact_value)
+    value_id INTEGER REFERENCES qjson_value(id),
+    lo       REAL,    -- roundDown(exact_value)
     str      TEXT,    -- exact string repr, NULL when lo == hi
-    hi       REAL     -- round_up_ieee754(exact_value)
+    hi       REAL     -- roundUp(exact_value)
 );
 
-CREATE TABLE string_value (
+CREATE TABLE qjson_string (
     id       INTEGER PRIMARY KEY,
-    value_id INTEGER REFERENCES value(id),
+    value_id INTEGER REFERENCES qjson_value(id),
     value    TEXT
 );
 
-CREATE TABLE blob_value (
+CREATE TABLE qjson_blob (
     id       INTEGER PRIMARY KEY,
-    value_id INTEGER REFERENCES value(id),
+    value_id INTEGER REFERENCES qjson_value(id),
     value    BLOB
 );
 
-CREATE TABLE array_value (
+CREATE TABLE qjson_array (
     id       INTEGER PRIMARY KEY,
-    value_id INTEGER REFERENCES value(id)
+    value_id INTEGER REFERENCES qjson_value(id)
 );
 
-CREATE TABLE array_item (
+CREATE TABLE qjson_array_item (
     id       INTEGER PRIMARY KEY,
-    array_id INTEGER REFERENCES array_value(id),
+    array_id INTEGER REFERENCES qjson_array(id),
     idx      INTEGER,
-    value_id INTEGER REFERENCES value(id)
+    value_id INTEGER REFERENCES qjson_value(id)
 );
 
-CREATE TABLE object_value (
+CREATE TABLE qjson_object (
     id       INTEGER PRIMARY KEY,
-    value_id INTEGER REFERENCES value(id)
+    value_id INTEGER REFERENCES qjson_value(id)
 );
 
-CREATE TABLE object_item (
+CREATE TABLE qjson_object_item (
     id        INTEGER PRIMARY KEY,
-    object_id INTEGER REFERENCES object_value(id),
+    object_id INTEGER REFERENCES qjson_object(id),
     key       TEXT,
-    value_id  INTEGER REFERENCES value(id)
+    value_id  INTEGER REFERENCES qjson_value(id)
 );
 ```
 
-The `number_value.str` optimization: when `lo == hi`, the IEEE
+**PostgreSQL**:
+
+```sql
+CREATE TABLE qjson_value (
+    id   SERIAL PRIMARY KEY,
+    type TEXT NOT NULL
+);
+
+CREATE TABLE qjson_number (
+    id       SERIAL PRIMARY KEY,
+    value_id INTEGER REFERENCES qjson_value(id),
+    lo       DOUBLE PRECISION,
+    str      TEXT,
+    hi       DOUBLE PRECISION
+);
+
+CREATE TABLE qjson_string (
+    id       SERIAL PRIMARY KEY,
+    value_id INTEGER REFERENCES qjson_value(id),
+    value    TEXT
+);
+
+CREATE TABLE qjson_blob (
+    id       SERIAL PRIMARY KEY,
+    value_id INTEGER REFERENCES qjson_value(id),
+    value    BYTEA
+);
+
+CREATE TABLE qjson_array (
+    id       SERIAL PRIMARY KEY,
+    value_id INTEGER REFERENCES qjson_value(id)
+);
+
+CREATE TABLE qjson_array_item (
+    id       SERIAL PRIMARY KEY,
+    array_id INTEGER REFERENCES qjson_array(id),
+    idx      INTEGER,
+    value_id INTEGER REFERENCES qjson_value(id)
+);
+
+CREATE TABLE qjson_object (
+    id       SERIAL PRIMARY KEY,
+    value_id INTEGER REFERENCES qjson_value(id)
+);
+
+CREATE TABLE qjson_object_item (
+    id        SERIAL PRIMARY KEY,
+    object_id INTEGER REFERENCES qjson_object(id),
+    key       TEXT,
+    value_id  INTEGER REFERENCES qjson_value(id)
+);
+```
+
+The `qjson_number.str` optimization: when `lo == hi`, the IEEE
 double IS the exact value — no string needed.
 
 | Value | type | lo | str | hi |
 |-------|------|----|-----|----|
 | `42` | number | 42.0 | NULL | 42.0 |
 | `67432.50M` | bigdec | 67432.5 | NULL | 67432.5 |
-| `0.1M` | bigdec | round_down(0.1) | `"0.1"` | round_up(0.1) |
-| `9007199254740993N` | bigint | round_down(9e15+1) | `"9007199254740993"` | round_up(9e15+1) |
+| `0.1M` | bigdec | roundDown(0.1) | `"0.1"` | roundUp(0.1) |
+| `9007199254740993N` | bigint | roundDown(9e15+1) | `"9007199254740993"` | roundUp(9e15+1) |
 
-`round_down` = largest IEEE double ≤ exact value.
-`round_up` = smallest IEEE double ≥ exact value.
-When the exact value IS an IEEE double: `round_down = round_up = value`.
+`roundDown` = largest IEEE double ≤ exact value.
+`roundUp` = smallest IEEE double ≥ exact value.
+When the exact value IS an IEEE double: `roundDown = roundUp = value`.
 
 ## WHERE efficiency
 
@@ -492,3 +592,156 @@ int qjson_cmp(a_lo, a_hi, a_str, a_len, b_lo, b_hi, b_str, b_len) {
 
 All ordering operators: `qjson_cmp(...) <op> 0`.
 Equality: compare `[lo, str, hi]` columns directly.
+
+### Database extensions
+
+The `qjson_cmp` and `qjson_decimal_cmp` functions are available
+as database extensions for exact comparison inside SQL:
+
+| Database | Mechanism | Exact math |
+|----------|-----------|------------|
+| SQLite | Loadable extension (`qjson_ext.dylib/.so`) | libbf (arbitrary precision) |
+| PostgreSQL | PL/pgSQL functions (`sql/qjson_pg.sql`) | `NUMERIC` type |
+
+Build the SQLite extension:
+
+```bash
+make   # produces qjson_ext.dylib (macOS) or qjson_ext.so (Linux)
+```
+
+## Query language
+
+jq-like path expressions compiled to SQL JOIN chains.
+Each path step is a fixed JOIN — no recursive CTEs,
+pure translation.
+
+### Path syntax
+
+| Syntax | Meaning | SQL |
+|--------|---------|-----|
+| `.key` | object child by key | JOIN `object` + `object_item WHERE key = 'key'` |
+| `[n]` | array index | JOIN `array` + `array_item WHERE idx = n` |
+| `[K]` | variable binding | JOIN `array` + `array_item` (K binds to idx) |
+| `.[]` | all array elements | JOIN `array` + `array_item` (all rows) |
+
+Variables are uppercase identifiers.  A variable used in both
+the SELECT path and WHERE clause refers to the same array
+element — it becomes a shared table alias in the generated SQL.
+
+### WHERE predicates
+
+```
+path == value       equality (exact projection match)
+path != value       inequality
+path < value        ordering (interval pushdown + exact fallback)
+path <= value
+path > value
+path >= value
+pred AND pred       conjunction
+pred OR pred        disjunction
+NOT pred            negation
+(pred)              grouping
+```
+
+Values: numbers (`42`, `0.1M`, `3.14L`), strings (`"hello"`),
+literals (`true`, `false`, `null`).
+
+### SELECT
+
+Returns matching values as `(value_id, qjson_text, bindings)`.
+
+```sql
+-- PostgreSQL (embedded translator)
+SELECT * FROM qjson_select(1, '.name');
+-- → (2, '"sensor-array"', {})
+
+SELECT * FROM qjson_select(1, '.items[K]', '.items[K].t > 30');
+-- → (15, '{"label":"hot","t":35,"y":3.5}',    {})
+-- → (19, '{"label":"fire","t":50,"y":5}',      {})
+
+SELECT qjson FROM qjson_select(1, '.items[K].label',
+    '.items[K].t > 20 AND .items[K].t < 40');
+-- → '"warm"'
+-- → '"hot"'
+```
+
+```python
+# Python (external translator)
+from qjson_query import qjson_select
+
+results = qjson_select(conn, root_id, '.items[K]',
+                        where_expr='.items[K].t > 30')
+for vid, bindings in results:
+    print(adapter['load'](vid))
+# {'label': 'hot', 't': 35.0, 'y': 3.5}
+# {'label': 'fire', 't': 50.0, 'y': 5.0}
+```
+
+### UPDATE
+
+Modifies scalar values in place.  Finds targets via the same
+path + WHERE mechanism, then replaces the child row.
+
+```python
+from qjson_query import qjson_update
+
+# Set y = 3 for all items where t > 30
+qjson_update(conn, root_id, '.items[K].y', 3,
+             where_expr='.items[K].t > 30')
+
+# Change label to "medium" where 20 < t < 40
+qjson_update(conn, root_id, '.items[K].label', 'medium',
+             where_expr='.items[K].t > 20 AND .items[K].t < 40')
+
+# Set to BigDecimal
+from decimal import Decimal
+qjson_update(conn, root_id, '.items[0].y', Decimal('99.99'))
+```
+
+### Reconstruction
+
+Any `value_id` can be reconstructed as canonical QJSON text.
+
+```sql
+-- PostgreSQL
+SELECT qjson_reconstruct(42, 'qjson_');
+-- → '{"label":"hot","t":35,"y":3.5}'
+```
+
+```python
+# Python
+adapter['load'](42)
+# → {'label': 'hot', 't': 35.0, 'y': 3.5}
+
+from qjson import stringify
+stringify(adapter['load'](42))
+# → '{"label":"hot","t":35,"y":3.5}'
+```
+
+### Interval pushdown example
+
+Query: `.items[K].value > 3.14159265358979323846L`
+
+The query literal is pre-projected:
+
+```
+roundDown("3.14159265358979323846") = 3.141592653589793
+roundUp("3.14159265358979323846")   = 3.1415926535897936
+str = "3.14159265358979323846"
+```
+
+Generated SQL (3-tier comparison):
+
+```sql
+WHERE n.hi > 3.141592653589793                          -- [brackets]: index scan
+  AND (n.lo > 3.1415926535897936                        -- {braces}: both exact
+       OR qjson_cmp(n.lo, n.hi, n.str,
+                    3.141592653589793, 3.1415926535897936,
+                    '3.14159265358979323846') > 0)      -- val(): exact fallback
+```
+
+The indexed `hi` column eliminates most rows.  The `lo` check
+resolves 99.999% of the remainder.  `qjson_cmp` (backed by libbf
+in SQLite or NUMERIC in PostgreSQL) fires only for the rare
+overlap zone where two inexact values share the same IEEE double
+brackets.

@@ -1,0 +1,54 @@
+services:
+  # ── Test instance (no encryption, ephemeral) ────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: qjson_test
+      POSTGRES_USER: qjson
+      POSTGRES_PASSWORD: qjson
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qjson -d qjson_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  # ── Production instance (encrypted volume) ──────────────
+  # Data directory on a tmpfs + encrypted volume.
+  # For real deployments, mount an encrypted filesystem
+  # (LUKS, dm-crypt, cloud encrypted EBS/PD) at /var/lib/postgresql/data.
+  #
+  # Usage:
+  #   docker compose up -d postgres-encrypted
+  #   PGPORT=5434 python3 test/test_qjson_sql.py --postgres
+  postgres-encrypted:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: qjson
+      POSTGRES_USER: qjson
+      POSTGRES_PASSWORD: ${QJSON_PG_PASSWORD:-qjson}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata_encrypted:/var/lib/postgresql/data
+      - ./sql/qjson_pg.sql:/docker-entrypoint-initdb.d/01-qjson.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qjson"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    command: >
+      postgres
+        -c ssl=off
+        -c shared_buffers=128MB
+        -c wal_level=replica
+        -c max_wal_size=256MB
+
+volumes:
+  # In production, back this with an encrypted block device.
+  # Docker Desktop on macOS: host filesystem is FileVault-encrypted.
+  # Linux: use LUKS-encrypted partition or dm-crypt volume.
+  # Cloud: use encrypted EBS (AWS), encrypted PD (GCP), or encrypted managed disk (Azure).
+  pgdata_encrypted:

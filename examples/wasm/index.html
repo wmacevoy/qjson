@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>QJSON + SQLCipher WASM</title>
+<style>
+  body { font-family: monospace; max-width: 800px; margin: 2em auto; background: #1a1a2e; color: #e0e0e0; }
+  h1 { color: #00d4aa; }
+  h2 { color: #0088cc; margin-top: 2em; }
+  .ok { color: #00d4aa; }
+  .err { color: #ff4444; }
+  .val { color: #ffaa00; }
+  .info { color: #888; }
+  pre { background: #0d0d1a; padding: 1em; border-radius: 4px; overflow-x: auto; }
+  #log { white-space: pre-wrap; line-height: 1.6; }
+  button { background: #0088cc; color: white; border: none; padding: 0.5em 1em;
+           border-radius: 4px; cursor: pointer; font-family: monospace; margin: 0.5em 0; }
+  button:hover { background: #00aaee; }
+  button:disabled { background: #444; cursor: default; }
+</style>
+</head>
+<body>
+
+<h1>QJSON + SQLCipher WASM</h1>
+<p class="info">
+  Encrypted QJSON storage in the browser.
+  All data encrypted at rest with SQLCipher, persisted via OPFS or IndexedDB.
+</p>
+
+<button id="run" onclick="runDemo()">Run Demo</button>
+<button id="shredBtn" onclick="shredDb()" disabled>Shred Database</button>
+
+<pre id="log"></pre>
+
+<!--
+  These files come from sqlcipher-libressl WASM build.
+  Copy them to this directory:
+    sqlcipher.js, sqlcipher.wasm, sqlcipher-worker.js, sqlcipher-api.js
+-->
+<script src="sqlcipher-api.js"></script>
+<script src="qjson-wasm.js"></script>
+<script>
+var qdb = null;
+
+function log(msg, cls) {
+  var el = document.getElementById("log");
+  if (cls) msg = '<span class="' + cls + '">' + msg + '</span>';
+  el.innerHTML += msg + "\n";
+}
+
+async function runDemo() {
+  document.getElementById("run").disabled = true;
+  document.getElementById("log").innerHTML = "";
+
+  try {
+    // ── Open encrypted database ───────────────────────────
+    log("Opening encrypted QJSON database...");
+    qdb = await QJSONDatabase.open({
+      filename: "/qjson-demo.db",
+      key: "demo-secret-key"
+    });
+    log("  mode: " + qdb.mode, "info");
+    log("  Opened.", "ok");
+
+    // ── Store a sensor document ───────────────────────────
+    log("\n--- Store ---");
+    var doc = {
+      name: "thermocouple-7",
+      readings: [
+        {t: 10, value: "0.003M", label: "cold"},
+        {t: 25, value: "2.718281828M", label: "warm"},
+        {t: 35, value: "3.14159265358979323846L", label: "hot"},
+        {t: 50, value: "9007199254740993N", label: "fire"},
+      ]
+    };
+    log("  Storing: " + JSON.stringify(doc).substring(0, 60) + "...");
+    var rootId = await qdb.store(doc);
+    log("  root_id = " + rootId, "val");
+
+    // ── Load it back ──────────────────────────────────────
+    log("\n--- Load ---");
+    var loaded = await qdb.load(rootId);
+    log("  name: " + JSON.stringify(loaded.name), "val");
+    log("  readings[0]: " + JSON.stringify(loaded.readings[0]), "val");
+    log("  readings[3].value: " + loaded.readings[3].value, "val");
+
+    // ── Reconstruct as QJSON ──────────────────────────────
+    log("\n--- Reconstruct (canonical QJSON) ---");
+    var qjsonText = await qdb.toQJSON(rootId);
+    log("  " + qjsonText.substring(0, 80) + "...", "val");
+
+    // ── Verify exact types survived ───────────────────────
+    log("\n--- Type verification ---");
+    var r = loaded.readings;
+    assert(r[0].value === "0.003M", "BigDecimal 0.003M");
+    assert(r[1].value === "2.718281828M", "BigDecimal 2.718281828M");
+    assert(r[2].value === "3.14159265358979323846L", "BigFloat pi");
+    assert(r[3].value === "9007199254740993N", "BigInt > 2^53");
+    assert(loaded.name === "thermocouple-7", "string");
+    assert(r[0].t === 10, "number 10");
+
+    // ── Verify QJSON reconstruction ───────────────────────
+    log("\n--- QJSON output verification ---");
+    assert(qjsonText.indexOf('"0.003M"') > -1 || qjsonText.indexOf('0.003M') > -1, "BigDecimal in QJSON");
+    assert(qjsonText.indexOf('9007199254740993N') > -1, "BigInt in QJSON");
+    assert(qjsonText.indexOf('"thermocouple-7"') > -1, "string in QJSON");
+
+    // ── SQL query directly ────────────────────────────────
+    log("\n--- Direct SQL query (interval columns) ---");
+    var nums = await qdb._db.select(
+      'SELECT v.type, n.lo, n.str, n.hi FROM qjson_value v ' +
+      'JOIN qjson_number n ON n.value_id = v.id ' +
+      'WHERE v.type != \'number\' LIMIT 4');
+    for (var i = 0; i < nums.length; i++) {
+      var n = nums[i];
+      log("  " + n.type + ": lo=" + n.lo + " str=" + (n.str || "NULL") + " hi=" + n.hi, "info");
+    }
+
+    // ── Persist ───────────────────────────────────────────
+    log("\n--- Save ---");
+    await qdb.save();
+    log("  Saved to " + qdb.mode, "ok");
+
+    // ── Export encrypted blob ─────────────────────────────
+    log("\n--- Export ---");
+    var blob = await qdb.export();
+    log("  Exported " + blob.byteLength + " bytes (encrypted)", "val");
+
+    log("\n=== ALL TESTS PASSED ===", "ok");
+    document.getElementById("shredBtn").disabled = false;
+
+  } catch (e) {
+    log("\nERROR: " + e.message, "err");
+    console.error(e);
+  }
+}
+
+function assert(cond, label) {
+  if (cond) {
+    log("  " + label + ": PASS", "ok");
+  } else {
+    log("  " + label + ": FAIL", "err");
+    throw new Error("Assertion failed: " + label);
+  }
+}
+
+async function shredDb() {
+  if (!qdb) return;
+  document.getElementById("shredBtn").disabled = true;
+  log("\n--- Shred ---");
+  log("  Overwriting with random data...");
+  await qdb.shred();
+  log("  Database shredded. All data destroyed.", "ok");
+  qdb = null;
+}
+</script>
+</body>
+</html>

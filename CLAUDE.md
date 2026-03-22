@@ -3,25 +3,40 @@
 ## Project
 
 QJSON — JSON superset with exact numerics (N/M/L suffixes, 0j blobs)
-and interval-projected SQL storage.  Three layers: format (parse/stringify),
-projection (`[lo, str, hi]` intervals), and SQL adapter (SQLite/SQLCipher/PG).
+and interval-projected SQL storage.  Four layers: format (parse/stringify),
+projection (`[lo, str, hi]` intervals), SQL adapter (SQLite/SQLCipher/PostgreSQL),
+and query translator (jq-like paths → SQL).
 
 Implementations in C, JavaScript, and Python.  All produce identical results.
 
 ## Commands
 
 ```bash
-# JavaScript tests
-node test/test-qjson.js
+# Build SQLite extension (libbf exact comparison)
+make
 
-# Python tests
+# Python format tests
 python3 test/test_qjson.py
 
-# C tests
-cc -O2 -std=c11 -frounding-math -o test_qjson test/test_qjson.c native/qjson.c -lm && ./test_qjson
+# JavaScript format tests
+node test/test-qjson.js
 
-# C with libbf (exact directed rounding)
-cc -O2 -std=c11 -DQJSON_USE_LIBBF -o test_qjson test/test_qjson.c native/qjson.c native/libbf/libbf.c native/libbf/cutils.c -lm && ./test_qjson
+# C tests (with libbf)
+make test_qjson && ./test_qjson
+
+# SQL adapter tests (SQLite)
+python3 test/test_qjson_sql.py
+
+# SQL adapter tests (SQLite + PostgreSQL)
+docker compose up -d postgres
+python3 test/test_qjson_sql.py --postgres
+docker compose down
+
+# PostgreSQL functions install
+psql -h localhost -p 5433 -U qjson -d qjson_test -f sql/qjson_pg.sql
+
+# All tests
+make test
 ```
 
 ## Architecture
@@ -29,8 +44,11 @@ cc -O2 -std=c11 -DQJSON_USE_LIBBF -o test_qjson test/test_qjson.c native/qjson.c
 ```
 Format:      parse/stringify QJSON text ↔ in-memory values
 Projection:  value → [lo, str, hi] IEEE double interval
+             roundDown/roundUp — identical across C, JS, Python
 Comparison:  qjson_cmp (4 lines: brackets → exact → decimal fallback)
-SQL adapter: create/insert/query tables with projected columns
+SQL adapter: normalized 8-table schema — store/load/remove any QJSON value
+Query:       jq-like path expressions → SQL JOIN chains (pure translation)
+Reconstruct: value_id → canonical QJSON text (PG: qjson_reconstruct)
 ```
 
 ### Source modules
@@ -38,9 +56,22 @@ SQL adapter: create/insert/query tables with projected columns
 | Module | Role |
 |--------|------|
 | `src/qjson.js` / `src/qjson.py` | QJSON parser + serializer |
-| `src/qsql.js` / `src/qsql.py` | Interval projection + SQL adapter |
+| `src/qjson-sql.js` / `src/qjson_sql.py` | Interval projection + SQL adapter (SQLite/SQLCipher/PG) |
+| `src/qjson_query.py` | Query translator (path → SQL compiler, SELECT + UPDATE) |
 | `native/qjson.h` / `native/qjson.c` | C: parse + stringify + project + cmp |
+| `native/qjson_sqlite_ext.c` | SQLite extension: qjson_cmp + qjson_decimal_cmp via libbf |
 | `native/libbf/` | Vendored libbf (exact directed rounding) |
+| `sql/qjson_pg.sql` | PostgreSQL: query translator + reconstruct + exact comparison |
+
+### Packaging
+
+| Package | Install | Contents |
+|---------|---------|----------|
+| pip `qjson` | `pip install qjson` | `qjson`, `qjson.sql`, `qjson.query` |
+| npm `qjson` | `npm install qjson` | `qjson.js`, `qjson-sql.js` |
+| Docker `qjson-postgres` | `docker pull ghcr.io/wmacevoy/qjson-postgres` | PG 16 + QJSON functions |
+
+Package structure: `qjson/` (pip), `package.json` (npm), `Dockerfile` (Docker).
 
 ### Key concepts
 
@@ -48,9 +79,9 @@ SQL adapter: create/insert/query tables with projected columns
 Valid JSON is valid QJSON.
 
 **Interval projection `[lo, str, hi]`**:
+- `lo` — largest IEEE double <= exact value (`roundDown`)
+- `hi` — smallest IEEE double >= exact value (`roundUp`)
 - `str` — exact string representation, NULL when lo == hi (exact double)
-- `lo` — largest IEEE double <= exact value
-- `hi` — smallest IEEE double >= exact value
 - Exact doubles: lo == hi (point interval, 99.999% of values)
 - Inexact: lo + 1 ULP == hi (1-ULP bracket)
 
@@ -62,9 +93,32 @@ if (a_lo == a_hi && b_lo == b_hi) return 0;  // both exact doubles
 return qjson_decimal_cmp(a_str, a_len, b_str, b_len);
 ```
 
-**SQL adapter**: configurable table prefix (default `qjson_`).
-Tables: `{prefix}{name}_{arity}`.  Per arg: `arg{i}` TEXT,
-`arg{i}_lo` REAL, `arg{i}_hi` REAL.
+**SQL adapter**: normalized relational schema with configurable prefix
+(default `qjson_`).  8 tables: `{prefix}value`, `{prefix}number`,
+`{prefix}string`, `{prefix}blob`, `{prefix}array`, `{prefix}array_item`,
+`{prefix}object`, `{prefix}object_item`.
+- SQLite/SQLCipher: `REAL` (8-byte), `BLOB`, `INTEGER PRIMARY KEY`
+- PostgreSQL: `DOUBLE PRECISION` (8-byte), `BYTEA`, `SERIAL PRIMARY KEY`
+- SQLCipher: pass `key='...'` to adapter; `PRAGMA key` issued before any operation
+
+**Query translator**: jq-like path expressions compiled to SQL JOINs.
+- `.key` → object child
+- `[n]` → array index
+- `[K]` → variable binding (shared across SELECT/WHERE)
+- `.[]` → iterate all elements
+- No `..` (recursive descent) — every path is a fixed JOIN chain, pure translation
+- WHERE with interval pushdown + libbf/NUMERIC exact fallback
+- AND / OR / NOT / parentheses
+
+**Database extensions**:
+- SQLite: `qjson_ext.dylib/.so` — `qjson_cmp()`, `qjson_decimal_cmp()` via libbf
+- PostgreSQL: `sql/qjson_pg.sql` — `qjson_select()`, `qjson_reconstruct()`,
+  `qjson_cmp()`, `qjson_decimal_cmp()` via PG NUMERIC
+
+**Encryption at rest**:
+- SQLite/SQLCipher: page-level, user-supplied key
+- Browser: SQLCipher WASM + OPFS/IndexedDB
+- PostgreSQL: encrypted volume (LUKS, cloud EBS/PD) — NOT pgcrypto on interval columns
 
 ## Constraints
 

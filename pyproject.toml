@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qjson"
+version = "0.2.0"
+description = "QJSON: JSON superset with exact numerics and interval-projected SQL storage"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+]
+
+[project.urls]
+Homepage = "https://github.com/wmacevoy/qjson"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["qjson*"]
