@@ -894,3 +894,143 @@ BEGIN
     END LOOP;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ── Expression solver ───────────────────────────────────────
+-- qjson_solve(root_id, expr, prefix)
+-- Parses constraint expression, substitutes path values,
+-- evaluates with PG NUMERIC, updates unbound values.
+-- Returns 1 if solved, 0 if not.
+
+CREATE OR REPLACE FUNCTION qjson_solve(
+    p_root_id INTEGER,
+    p_expr    TEXT,
+    p_prefix  TEXT DEFAULT 'qjson_'
+) RETURNS INTEGER AS $$
+DECLARE
+    constraint_parts TEXT[];
+    part TEXT;
+    lhs_text TEXT;
+    rhs_text TEXT;
+    i INTEGER;
+    solved INTEGER := 0;
+    progress BOOLEAN;
+BEGIN
+    constraint_parts := regexp_split_to_array(p_expr, '\mAND\M');
+
+    -- Leaf-folding: repeat until no progress
+    LOOP
+        progress := FALSE;
+        FOR i IN 1..array_length(constraint_parts, 1) LOOP
+            part := trim(constraint_parts[i]);
+            IF position('==' IN part) = 0 THEN CONTINUE; END IF;
+
+            lhs_text := trim(split_part(part, '==', 1));
+            rhs_text := trim(split_part(part, '==', 2));
+
+            -- Try both directions: LHS unknown, RHS unknown
+            IF _qjson_try_solve_one(p_root_id, lhs_text, rhs_text, p_prefix) THEN
+                progress := TRUE;
+            ELSIF _qjson_try_solve_one(p_root_id, rhs_text, lhs_text, p_prefix) THEN
+                progress := TRUE;
+            END IF;
+        END LOOP;
+        IF NOT progress THEN EXIT; END IF;
+    END LOOP;
+
+    -- Check if everything is bound
+    PERFORM 1 FROM qjson_value WHERE id IN (
+        SELECT oi.value_id FROM qjson_object_item oi
+        JOIN qjson_object o ON oi.object_id = o.id
+        WHERE o.value_id = p_root_id
+    ) AND type = 'unbound';
+    IF NOT FOUND THEN RETURN 1; END IF;
+    RETURN 0;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Helper: try to solve target_path = eval(expr) if target is unbound
+CREATE OR REPLACE FUNCTION _qjson_try_solve_one(
+    p_root_id INTEGER,
+    p_target  TEXT,      -- single path like ".rate"
+    p_expr    TEXT,      -- expression like ".present * POWER(1 + .rate, .periods)"
+    p_prefix  TEXT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    target_vid INTEGER;
+    target_type TEXT;
+    key_name TEXT;
+    expr_work TEXT;
+    path_name TEXT;
+    path_val NUMERIC;
+    eval_result NUMERIC;
+BEGIN
+    -- Target must be a single .path
+    IF p_target !~ '^\.[a-zA-Z_]\w*$' THEN RETURN FALSE; END IF;
+    key_name := substring(p_target from 2);
+
+    -- Check if target is unbound
+    EXECUTE format(
+        'SELECT oi.value_id, v.type FROM %I oi '
+        'JOIN %I o ON oi.object_id = o.id '
+        'JOIN %I v ON v.id = oi.value_id '
+        'JOIN %I root ON o.value_id = root.id '
+        'WHERE root.id = $1 AND oi.key = $2',
+        p_prefix || 'object_item', p_prefix || 'object',
+        p_prefix || 'value', p_prefix || 'value')
+    INTO target_vid, target_type
+    USING p_root_id, key_name;
+
+    IF target_type != 'unbound' THEN RETURN FALSE; END IF;
+
+    -- Substitute path values into expression
+    expr_work := p_expr;
+    expr_work := regexp_replace(expr_work, 'POWER\s*\(([^,]+),\s*([^)]+)\)', '(\1)^(\2)', 'gi');
+    expr_work := regexp_replace(expr_work, 'SQRT\s*\(([^)]+)\)', '|/(\1)', 'gi');
+    expr_work := regexp_replace(expr_work, 'LOG\s*\(([^)]+)\)', 'ln(\1)', 'gi');
+    expr_work := regexp_replace(expr_work, '\*\*', '^', 'g');
+
+    FOR path_name IN
+        SELECT DISTINCT (regexp_matches(expr_work, '\.([a-zA-Z_]\w*)', 'g'))[1]
+    LOOP
+        BEGIN
+            EXECUTE format(
+                'SELECT COALESCE(n.str, n.lo::TEXT)::NUMERIC FROM %I oi '
+                'JOIN %I o ON oi.object_id = o.id '
+                'JOIN %I n ON n.value_id = oi.value_id '
+                'JOIN %I v ON v.id = oi.value_id '
+                'JOIN %I root ON o.value_id = root.id '
+                'WHERE root.id = $1 AND oi.key = $2 AND v.type != ''unbound''',
+                p_prefix || 'object_item', p_prefix || 'object',
+                p_prefix || 'number', p_prefix || 'value', p_prefix || 'value')
+            INTO path_val
+            USING p_root_id, path_name;
+        EXCEPTION WHEN OTHERS THEN
+            path_val := NULL;
+        END;
+
+        IF path_val IS NULL THEN RETURN FALSE; END IF;
+        expr_work := replace(expr_work, '.' || path_name, path_val::TEXT);
+    END LOOP;
+
+    -- Evaluate expression
+    BEGIN
+        EXECUTE 'SELECT (' || expr_work || ')::NUMERIC' INTO eval_result;
+    EXCEPTION WHEN OTHERS THEN
+        RETURN FALSE;
+    END;
+
+    IF eval_result IS NULL THEN RETURN FALSE; END IF;
+
+    -- Update the unbound value
+    EXECUTE format('UPDATE %I SET type = ''number'' WHERE id = $1',
+                   p_prefix || 'value') USING target_vid;
+    EXECUTE format('DELETE FROM %I WHERE value_id = $1',
+                   p_prefix || 'number') USING target_vid;
+    EXECUTE format(
+        'INSERT INTO %I (value_id, lo, str, hi) VALUES ($1, $2, $3, $2)',
+        p_prefix || 'number')
+    USING target_vid, eval_result::DOUBLE PRECISION, eval_result::TEXT;
+
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql;
