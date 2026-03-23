@@ -9,7 +9,7 @@ Usage:
 import importlib.util as _ilu
 import os as _os
 
-__version__ = "0.2.2"
+__version__ = "1.0.0"
 
 # Load src/qjson.py directly to avoid circular import with this package
 _src_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', 'src', 'qjson.py')
