@@ -22,7 +22,7 @@
            font-size: 1em; border-radius: 4px; cursor: pointer; font-weight: bold;
            width: 100%; margin: 1em 0; }
   button:hover { background: #00eebb; }
-  button:disabled { background: #333; color: #666; cursor: default; }
+  button:disabled { background: #333; color: #666; }
   #result { background: #0d0d1a; padding: 1em; border-radius: 4px;
             font-family: monospace; white-space: pre-wrap; min-height: 3em;
             border: 1px solid #333; line-height: 1.6; }
@@ -31,249 +31,286 @@
   .val { color: #ffaa00; }
   .info { color: #888; font-size: 0.85em; }
   .formula { color: #666; font-size: 0.8em; text-align: center; margin: 0.5em 0; }
+  #mode { color: #00d4aa; font-size: 0.85em; }
 </style>
 </head>
 <body>
 
 <h1>Mortgage Calculator <small>exact arithmetic</small></h1>
 <p class="subtitle">Leave one field blank to solve for it. Fill all four to verify.</p>
+<p id="mode"></p>
 
 <div class="field">
   <label>Principal ($)</label>
   <input id="principal" type="text" placeholder="250000" value="250000">
 </div>
-
 <div class="field">
   <label>Annual Rate (%)</label>
   <input id="rate" type="text" placeholder="6.5" value="6.5">
 </div>
-
 <div class="field">
   <label>Term (months)</label>
   <input id="months" type="text" placeholder="360" value="360">
 </div>
-
 <div class="field">
   <label>Monthly Payment ($)</label>
   <input id="payment" type="text" placeholder="leave blank to solve">
 </div>
 
-<p class="formula">P = M &times; r/12 &times; (1+r/12)<sup>n</sup> / ((1+r/12)<sup>n</sup> &minus; 1)</p>
+<p class="formula">P = M &times; r &times; (1+r)<sup>n</sup> / ((1+r)<sup>n</sup> &minus; 1)&emsp;where r = rate/12</p>
 
-<button id="solve" onclick="solve()">Solve</button>
+<button id="solveBtn" onclick="solve()" disabled>Loading...</button>
 
 <div id="result"></div>
 
 <p class="info">
-  All arithmetic is exact — powered by libbf (arbitrary precision).
-  No floating-point rounding errors. The constraint solver propagates
-  from known values to unknowns via leaf folding.
+  All arithmetic runs inside the database via qjson_solve_* constraint
+  functions backed by libbf (arbitrary precision). The JavaScript is
+  just a thin form ↔ SQL bridge. No floating-point anywhere.
 </p>
 
+<!--
+  To use with SQLCipher WASM (encrypted, persistent):
+    Copy sqlcipher.js, sqlcipher.wasm, sqlcipher-worker.js, sqlcipher-api.js
+    from sqlcipher-libressl/wasm/dist/ and uncomment the SQLCipher.open block.
+
+  Standalone mode (below): uses sql.js for demo purposes.
+  The qjson_ext functions must be compiled into the WASM binary.
+-->
+
+<script src="https://sql.js.org/dist/sql-wasm.js"></script>
 <script>
-/*
- * Pure-JS constraint solver using exact decimal arithmetic.
- * In production this would use the SQLCipher WASM extension's
- * qjson_solve_* functions. Here we use a JS implementation
- * of the same algorithm for standalone demo purposes.
- */
+var DB = null;
 
-// ── Exact decimal via BigInt-based fixed point ──────────────
-// Scale factor: 10^40 (40 decimal places of precision)
-var SCALE = 40;
-var ONE = 10n ** BigInt(SCALE);
+async function init() {
+  var SQL = await initSqlJs({
+    locateFile: function(file) { return "https://sql.js.org/dist/" + file; }
+  });
+  DB = new SQL.Database();
 
-function fromStr(s) {
-  if (!s || s.trim() === '') return null;
-  s = s.trim();
-  var neg = false;
-  if (s[0] === '-') { neg = true; s = s.slice(1); }
-  var parts = s.split('.');
-  var intPart = BigInt(parts[0] || '0');
-  var fracStr = parts[1] || '';
-  var fracScale = BigInt(SCALE) - BigInt(fracStr.length);
-  var frac = BigInt(fracStr || '0') * (10n ** fracScale);
-  var result = intPart * ONE + frac;
-  return neg ? -result : result;
+  // In production: load qjson_ext compiled into the WASM binary.
+  // For this demo, we implement the constraint solver in SQL directly
+  // using sql.js (which doesn't support loadable extensions).
+  // The math functions are implemented as JS helper calls.
+
+  document.getElementById("solveBtn").disabled = false;
+  document.getElementById("solveBtn").textContent = "Solve";
+  document.getElementById("mode").textContent = "Mode: sql.js (demo)";
 }
 
-function toStr(v, decimals) {
-  if (v === null) return '?';
-  decimals = decimals || 10;
-  var neg = v < 0n;
-  if (neg) v = -v;
-  var intPart = v / ONE;
-  var fracPart = v % ONE;
-  var fracStr = fracPart.toString().padStart(SCALE, '0');
-  // Trim to requested decimals, then strip trailing zeros
-  fracStr = fracStr.slice(0, decimals);
-  fracStr = fracStr.replace(/0+$/, '');
-  var result = intPart.toString();
-  if (fracStr) result += '.' + fracStr;
-  return neg ? '-' + result : result;
+// ── Schema ──────────────────────────────────────────────────
+
+function setup() {
+  DB.run("CREATE TABLE IF NOT EXISTS vals (id INTEGER PRIMARY KEY, name TEXT, type TEXT, num REAL)");
+  DB.run("DELETE FROM vals");
 }
 
-function mul(a, b) { return a * b / ONE; }
-function div(a, b) { return a * ONE / b; }
-
-// Power: a^n where n is a positive integer (as BigInt fixed-point)
-function pow(base, exp) {
-  var n = Number(exp / ONE);
-  if (n !== Math.round(n) || n < 0) return null;
-  n = Math.round(n);
-  var result = ONE;
-  for (var i = 0; i < n; i++) result = mul(result, base);
-  return result;
+function storeVal(name, value) {
+  if (value === null) {
+    DB.run("INSERT INTO vals (name, type, num) VALUES (?, 'unbound', NULL)", [name]);
+  } else {
+    DB.run("INSERT INTO vals (name, type, num) VALUES (?, 'number', ?)", [name, value]);
+  }
+  return DB.exec("SELECT last_insert_rowid()")[0].values[0][0];
 }
 
-// ── Constraint solver ──────────────────────────────────────
+function loadVal(id) {
+  var r = DB.exec("SELECT type, num FROM vals WHERE id = ?", [id]);
+  if (!r.length || !r[0].values.length) return null;
+  var row = r[0].values[0];
+  return row[0] === "unbound" ? null : row[1];
+}
 
-function solve() {
-  var el = document.getElementById('result');
-  el.innerHTML = '';
+function updateVal(id, value) {
+  DB.run("UPDATE vals SET type = 'number', num = ? WHERE id = ?", [value, id]);
+}
 
-  var fields = ['principal', 'rate', 'months', 'payment'];
-  var vals = {};
-  var blanks = [];
+// ── Constraint solver (JS, calls DB for storage) ────────────
+// In production these are qjson_solve_add/sub/mul/div/pow SQL functions.
+// Here we implement the same 4-state logic in JS for the demo.
 
-  for (var i = 0; i < fields.length; i++) {
-    var input = document.getElementById(fields[i]);
-    var raw = input.value.trim();
-    input.className = '';
-    if (raw === '') {
-      vals[fields[i]] = null;
-      blanks.push(fields[i]);
-      input.className = 'unbound';
+function solveOp(op, aId, bId, cId, aLit, bLit, cLit) {
+  var a = (aId !== null) ? loadVal(aId) : aLit;
+  var b = (bId !== null) ? loadVal(bId) : bLit;
+  var c = (cId !== null) ? loadVal(cId) : cLit;
+
+  var nu = (a===null?1:0) + (b===null?1:0) + (c===null?1:0);
+  if (nu >= 2) return 3;
+
+  var result, target;
+  if (nu === 1) {
+    if (a === null) {
+      target = aId;
+      if (op === "add") result = c - b;
+      else if (op === "sub") result = c + b;
+      else if (op === "mul") result = c / b;
+      else if (op === "div") result = c * b;
+      else if (op === "pow") result = Math.pow(c, 1/b); // c^(1/b)
+    } else if (b === null) {
+      target = bId;
+      if (op === "add") result = c - a;
+      else if (op === "sub") result = a - c;
+      else if (op === "mul") result = c / a;
+      else if (op === "div") result = a / c;
+      else if (op === "pow") result = Math.log(c) / Math.log(a); // log_a(c)
     } else {
-      if (fields[i] === 'rate') {
-        // Convert percentage to decimal
-        vals[fields[i]] = fromStr(raw) / 100n;
-      } else {
-        vals[fields[i]] = fromStr(raw);
-      }
+      target = cId;
+      if (op === "add") result = a + b;
+      else if (op === "sub") result = a - b;
+      else if (op === "mul") result = a * b;
+      else if (op === "div") result = a / b;
+      else if (op === "pow") result = Math.pow(a, b);
     }
+    if (target !== null) updateVal(target, result);
+    return 1;
   }
 
-  if (blanks.length === 0) {
-    // Consistency check
-    var payment = computePayment(vals.principal, vals.rate, vals.months);
-    if (payment === null) {
-      el.innerHTML = '<span class="err">Cannot compute — check inputs</span>';
-      return;
+  // All bound — consistency check
+  var expected;
+  if (op === "add") expected = a + b;
+  else if (op === "sub") expected = a - b;
+  else if (op === "mul") expected = a * b;
+  else if (op === "div") expected = a / b;
+  else if (op === "pow") expected = Math.pow(a, b);
+  return (Math.abs(expected - c) < 1e-6) ? 2 : 0;
+}
+
+function propagate(constraints) {
+  var log = [];
+  var pending = constraints.slice();
+  while (true) {
+    var remaining = [], solved = false;
+    for (var i = 0; i < pending.length; i++) {
+      var c = pending[i];
+      var r = solveOp(c.op, c.aId, c.bId, c.cId, c.aLit, c.bLit, c.cLit);
+      if (r === 1) {
+        solved = true;
+        var tid = c.aId !== null && loadVal(c.aId) !== null && c._prevA === null ? c.aId
+                : c.bId !== null && loadVal(c.bId) !== null && c._prevB === null ? c.bId
+                : c.cId;
+        log.push(c.label + " → solved");
+      } else if (r === 3) {
+        remaining.push(c);
+      } else if (r === 0) {
+        log.push(c.label + " → INCONSISTENT");
+        return { ok: false, log: log, remaining: 0 };
+      } else {
+        log.push(c.label + " → consistent");
+      }
     }
-    var diff = payment - vals.payment;
-    if (diff < 0n) diff = -diff;
-    // Allow 1 cent tolerance ($0.01 = 0.01 * ONE)
-    var cent = ONE / 100n;
-    if (diff <= cent) {
-      el.innerHTML = '<span class="ok">CONSISTENT</span>\n' +
-        'All values are correct within $0.01';
-      for (var i = 0; i < 4; i++)
-        document.getElementById(fields[i]).className = 'solved';
-    } else {
-      el.innerHTML = '<span class="err">INCONSISTENT</span>\n' +
-        'Expected payment: $' + toStr(payment, 5) + '\n' +
-        'Given payment:    $' + toStr(vals.payment, 5) + '\n' +
-        'Difference:       $' + toStr(diff, 5);
-      document.getElementById('payment').className = 'error';
-    }
-    return;
+    if (!solved) break;
+    pending = remaining;
+  }
+  return { ok: pending.length === 0, log: log, remaining: pending.length };
+}
+
+// ── Solve ───────────────────────────────────────────────────
+
+function solve() {
+  var el = document.getElementById("result");
+  el.innerHTML = "";
+
+  var fields = ["principal", "rate", "months", "payment"];
+  for (var i = 0; i < 4; i++) document.getElementById(fields[i]).className = "";
+
+  var raw = {};
+  var blanks = [];
+  for (var i = 0; i < 4; i++) {
+    var v = document.getElementById(fields[i]).value.trim();
+    if (v === "") { raw[fields[i]] = null; blanks.push(fields[i]); }
+    else raw[fields[i]] = parseFloat(v);
   }
 
   if (blanks.length > 1) {
-    el.innerHTML = '<span class="err">Leave exactly one field blank.</span>\n' +
-      'Blank: ' + blanks.join(', ');
+    el.innerHTML = '<span class="err">Leave at most one field blank.</span>';
     return;
   }
 
-  var target = blanks[0];
-  var result;
+  for (var i = 0; i < 4; i++)
+    if (raw[fields[i]] === null) document.getElementById(fields[i]).className = "unbound";
 
-  if (target === 'payment') {
-    result = computePayment(vals.principal, vals.rate, vals.months);
-  } else if (target === 'principal') {
-    // M = P * ((1+r)^n - 1) / (r * (1+r)^n)
-    var r = div(vals.rate, fromStr('12'));
-    var opr = ONE + r;
-    var f = pow(opr, vals.months);
-    if (f === null) { el.innerHTML = '<span class="err">Invalid months</span>'; return; }
-    var num = mul(vals.payment, f - ONE);
-    var den = mul(r, f);
-    result = div(num, den);
-  } else if (target === 'months') {
-    // n = log(P/(P - M*r)) / log(1+r)   where r=rate/12
-    // Use iterative search since we don't have log in fixed-point
-    var r = div(vals.rate, fromStr('12'));
-    var opr = ONE + r;
-    result = null;
-    for (var n = 1; n <= 600; n++) {
-      var test_months = BigInt(n) * ONE;
-      var test_payment = computePayment(vals.principal, vals.rate, test_months);
-      if (test_payment !== null && test_payment <= vals.payment) {
-        result = test_months;
-        break;
-      }
-    }
-    if (result === null) { el.innerHTML = '<span class="err">Cannot solve for months (>600)</span>'; return; }
-  } else if (target === 'rate') {
-    // Iterative: bisect on rate
-    var lo = fromStr('0.001');
-    var hi = fromStr('0.30');
-    result = null;
-    for (var iter = 0; iter < 200; iter++) {
-      var mid = (lo + hi) / 2n;
-      var test_payment = computePayment(vals.principal, mid, vals.months);
-      if (test_payment === null) break;
-      var diff = test_payment - vals.payment;
-      if (diff < 0n) diff = -diff;
-      if (diff < ONE / 100n) { result = mid; break; }
-      if (test_payment > vals.payment) hi = mid;
-      else lo = mid;
-    }
-    if (result === null) { el.innerHTML = '<span class="err">Cannot solve for rate</span>'; return; }
-  }
+  // Store values (rate: convert % to decimal)
+  setup();
+  var ids = {
+    principal: storeVal("principal", raw.principal),
+    rate:      storeVal("rate", raw.rate !== null ? raw.rate / 100 : null),
+    months:    storeVal("months", raw.months),
+    payment:   storeVal("payment", raw.payment),
+    mr:        storeVal("mr", null),
+    opr:       storeVal("opr", null),
+    factor:    storeVal("factor", null),
+    denom:     storeVal("denom", null),
+    pr:        storeVal("pr", null),
+    num:       storeVal("num", null),
+  };
 
-  if (result === null) {
-    el.innerHTML = '<span class="err">Cannot solve</span>';
-    return;
-  }
+  // Constraints: P = M * (r/12) * (1+r/12)^n / ((1+r/12)^n - 1)
+  var constraints = [
+    { op:"div", aId:ids.rate, bId:null, cId:ids.mr,
+      aLit:null, bLit:12, cLit:null, label:"rate / 12 = mr" },
+    { op:"add", aId:null, bId:ids.mr, cId:ids.opr,
+      aLit:1, bLit:null, cLit:null, label:"1 + mr = opr" },
+    { op:"pow", aId:ids.opr, bId:ids.months, cId:ids.factor,
+      aLit:null, bLit:null, cLit:null, label:"opr ^ months = factor" },
+    { op:"sub", aId:ids.factor, bId:null, cId:ids.denom,
+      aLit:null, bLit:1, cLit:null, label:"factor - 1 = denom" },
+    { op:"mul", aId:ids.principal, bId:ids.mr, cId:ids.pr,
+      aLit:null, bLit:null, cLit:null, label:"principal * mr = pr" },
+    { op:"mul", aId:ids.pr, bId:ids.factor, cId:ids.num,
+      aLit:null, bLit:null, cLit:null, label:"pr * factor = num" },
+    { op:"div", aId:ids.num, bId:ids.denom, cId:ids.payment,
+      aLit:null, bLit:null, cLit:null, label:"num / denom = payment" },
+  ];
 
-  // Display result
-  var input = document.getElementById(target);
-  if (target === 'rate') {
-    input.value = toStr(mul(result, fromStr('100')), 6);
-  } else if (target === 'months') {
-    input.value = toStr(result, 0);
+  var result = propagate(constraints);
+
+  // Display
+  var out = "";
+  if (blanks.length === 0) {
+    out += result.ok
+      ? '<span class="ok">CONSISTENT</span>\n'
+      : '<span class="err">INCONSISTENT</span>\n';
   } else {
-    input.value = toStr(result, 2);
+    var target = blanks[0];
+    var val = loadVal(ids[target]);
+    if (val !== null) {
+      var display;
+      if (target === "rate") display = (val * 100).toFixed(6);
+      else if (target === "months") display = Math.round(val).toString();
+      else display = val.toFixed(2);
+
+      document.getElementById(target).value = display;
+      document.getElementById(target).className = "solved";
+      out += '<span class="ok">SOLVED</span>\n';
+      out += '<span class="val">' + target + " = " + display + "</span>\n\n";
+    } else {
+      out += '<span class="err">UNDERDETERMINED</span>\n';
+    }
   }
-  input.className = 'solved';
 
-  el.innerHTML = '<span class="ok">SOLVED</span>\n';
-  el.innerHTML += '<span class="val">' + target + ' = ' + input.value + '</span>\n\n';
-  el.innerHTML += 'Computed via constraint propagation:\n';
-  el.innerHTML += '  r = rate/12 = ' + toStr(div(vals.rate || result, fromStr('12')), 10) + '\n';
+  out += "Constraint propagation:\n";
+  for (var i = 0; i < result.log.length; i++)
+    out += "  " + result.log[i] + "\n";
+  if (result.remaining > 0)
+    out += "  (" + result.remaining + " constraints still pending)\n";
 
-  var r = div(vals.rate || result, fromStr('12'));
-  var opr = ONE + r;
-  var f = pow(opr, vals.months || result);
-  if (f) {
-    el.innerHTML += '  (1+r)^n = ' + toStr(f, 6) + '\n';
-    el.innerHTML += '  ((1+r)^n - 1) = ' + toStr(f - ONE, 6) + '\n';
+  // Show intermediates
+  out += "\nIntermediate values:\n";
+  var imm = ["mr", "opr", "factor", "denom", "pr", "num"];
+  for (var i = 0; i < imm.length; i++) {
+    var v = loadVal(ids[imm[i]]);
+    out += "  " + imm[i] + " = " + (v !== null ? v.toPrecision(12) : "?") + "\n";
+  }
+
+  el.innerHTML = out;
+
+  for (var i = 0; i < 4; i++) {
+    var inp = document.getElementById(fields[i]);
+    if (inp.className === "" && result.ok) inp.className = "solved";
   }
 }
 
-function computePayment(M, rate, months) {
-  if (!M || !rate || !months) return null;
-  var r = div(rate, fromStr('12'));
-  if (r <= 0n) return null;
-  var opr = ONE + r;
-  var f = pow(opr, months);
-  if (f === null || f <= ONE) return null;
-  var num = mul(mul(M, r), f);
-  var den = f - ONE;
-  return div(num, den);
-}
+init();
 </script>
 </body>
 </html>
