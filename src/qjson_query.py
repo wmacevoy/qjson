@@ -174,16 +174,17 @@ class _QueryBuilder:
 #   predicates = predicate (('AND'|'OR') predicate)* | 'NOT' predicate | '(' predicates ')'
 #   expr       = term (('+' | '-') term)*
 #   term       = factor (('*' | '/') factor)*
-#   factor     = atom ('^' atom)?
-#   atom       = path | number | '(' expr ')'
+#   factor     = atom ('**' atom)?
+#   atom       = path | number | func '(' args ')' | '(' expr ')'
 
 _TOKEN_RE = re.compile(r"""
     (==|!=|<=|>=|<|>)                              # comparison
   | (\+|-(?!\d))                                   # add/sub (minus not before digit)
-  | (\*|/)                                         # mul/div
-  | (\^)                                           # power
+  | (\*\*|\*|/)                                    # power(**) or mul/div
   | \b(AND|OR|NOT)\b                               # logic
+  | \b(POWER|SQRT|EXP|LOG|SIN|COS|TAN|ATAN|ASIN|ACOS|PI)\b  # functions
   | (\(|\))                                        # parens
+  | (,)                                            # comma (function args)
   | ((?:\.[a-zA-Z_]\w*|\[\w+\]|\.\[\])+)          # path
   | (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[NMLnml]?)   # number
   | (true|false|null)                              # literal
@@ -201,14 +202,17 @@ def _tokenize(expr):
             raise ValueError("Invalid at position %d: %r" % (pos, expr[pos:]))
         if m.group(1): tokens.append(('cmp', m.group(1)))
         elif m.group(2): tokens.append(('addsub', m.group(2)))
-        elif m.group(3): tokens.append(('muldiv', m.group(3)))
-        elif m.group(4): tokens.append(('pow', '^'))
-        elif m.group(5): tokens.append(('logic', m.group(5)))
+        elif m.group(3):
+            if m.group(3) == '**': tokens.append(('pow', '**'))
+            else: tokens.append(('muldiv', m.group(3)))
+        elif m.group(4): tokens.append(('logic', m.group(4)))
+        elif m.group(5): tokens.append(('func', m.group(5)))
         elif m.group(6): tokens.append(('paren', m.group(6)))
-        elif m.group(7): tokens.append(('path', m.group(7)))
-        elif m.group(8): tokens.append(('number', m.group(8)))
-        elif m.group(9): tokens.append(('literal', m.group(9)))
-        elif m.group(10): tokens.append(('string', m.group(10)))
+        elif m.group(7): tokens.append(('comma', ','))
+        elif m.group(8): tokens.append(('path', m.group(8)))
+        elif m.group(9): tokens.append(('number', m.group(9)))
+        elif m.group(10): tokens.append(('literal', m.group(10)))
+        elif m.group(11): tokens.append(('string', m.group(11)))
         pos = m.end()
     return tokens
 
@@ -266,7 +270,7 @@ class _ExprCompiler:
         return left
 
     def factor(self):
-        """factor = atom ('^' atom)?"""
+        """factor = atom ('**' atom)?"""
         left = self.atom()
         tok = self.eat('pow')
         if tok:
@@ -275,24 +279,54 @@ class _ExprCompiler:
         return left
 
     def atom(self):
-        """atom = path | number | '(' expr ')'"""
+        """atom = path | number | func(args) | '(' expr ')'"""
         t, v = self.peek()
+
+        # Function call: POWER(a,b), SQRT(a), etc.
+        if t == 'func':
+            self.pos += 1
+            fn_name = v.upper()
+            if not self.eat('paren'):  # opening (
+                raise ValueError("Expected '(' after %s" % fn_name)
+            _fn_map = {
+                'POWER': ('qjson_pow', 2), 'SQRT': ('qjson_sqrt', 1),
+                'EXP': ('qjson_exp', 1), 'LOG': ('qjson_log', 1),
+                'SIN': ('qjson_sin', 1), 'COS': ('qjson_cos', 1),
+                'TAN': ('qjson_tan', 1), 'ATAN': ('qjson_atan', 1),
+                'ASIN': ('qjson_asin', 1), 'ACOS': ('qjson_acos', 1),
+                'PI': ('qjson_pi', 0),
+            }
+            sql_fn, nargs = _fn_map.get(fn_name, (None, 0))
+            if not sql_fn:
+                raise ValueError("Unknown function: %s" % fn_name)
+            args = []
+            if nargs > 0:
+                args.append(self.expr())
+                while self.eat('comma'):
+                    args.append(self.expr())
+            if not self.eat('paren'):  # closing )
+                raise ValueError("Expected ')' after %s arguments" % fn_name)
+            return "%s(%s)" % (sql_fn, ', '.join(args))
+
+        # Parenthesized expression
         if t == 'paren' and v == '(':
             self.pos += 1
             result = self.expr()
             if not self.eat('paren'):
                 raise ValueError("Expected ')'")
             return result
+
         if t == 'number':
             self.pos += 1
-            # Strip suffix for the decimal string
             raw = v
             if raw and raw[-1] in 'NMLnml':
                 raw = raw[:-1]
             return "'%s'" % raw
+
         if t == 'path':
             self.pos += 1
             return self._resolve_path_to_str(v)
+
         raise ValueError("Expected value, got %r" % (self.peek(),))
 
     def _resolve_path_to_str(self, path_expr):
