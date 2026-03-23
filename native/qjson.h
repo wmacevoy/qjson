@@ -114,21 +114,34 @@ void qjson_val_project(const qjson_val *v, double *lo, double *hi);
    Without: string-based decimal comparison (no scientific notation). */
 int qjson_decimal_cmp(const char *a, int a_len, const char *b, int b_len);
 
-/* Compare two projected values.  Returns -1, 0, or 1.
+/* Compare two projected values.  Six operator-specific functions,
+   each returning 0 (false) or 1 (true).
+
    Uses intervals for fast accept/reject, falls through to
    exact comparison only in the overlap zone (~0.001%).
 
    type is the qjson_type enum value — needed to resolve exact values
-   when one side is an exact double (str=NULL) and the other is not.
+   when one side is an exact double (str=NULL) and the other is not,
+   and to handle unbound variables.
 
-   All six operators: qjson_cmp(...) <op> 0.
+   Unbound semantics:
+     Same-name unbounds (?X vs ?X): behave as equal.
+       eq→1, ne→0, le→1, ge→1, lt→0, gt→0
+     Different-name unbounds (?X vs ?Y) or unbound vs concrete:
+       all six return 1 (unknown — could satisfy any relation).
 
-   For SQL WHERE clauses, expand inline for index usage:
-     a < b  →  (a_hi < b_lo) OR ((a_lo < b_hi) AND cmp(a,b) < 0)
-     a == b →  (a_hi >= b_lo AND b_hi >= a_lo) AND cmp(a,b) = 0
-   See docs/qjson.md SQL representation for all operators. */
-int qjson_cmp(int a_type, double a_lo, const char *a_str, int a_str_len, double a_hi,
-              int b_type, double b_lo, const char *b_str, int b_str_len, double b_hi);
+   See docs/qjson.md for the full comparison spec. */
+
+#define QJSON_CMP_ARGS \
+    int a_type, double a_lo, const char *a_str, int a_str_len, double a_hi, \
+    int b_type, double b_lo, const char *b_str, int b_str_len, double b_hi
+
+int qjson_cmp_lt(QJSON_CMP_ARGS);   /* a <  b */
+int qjson_cmp_le(QJSON_CMP_ARGS);   /* a <= b */
+int qjson_cmp_eq(QJSON_CMP_ARGS);   /* a == b */
+int qjson_cmp_ne(QJSON_CMP_ARGS);   /* a != b */
+int qjson_cmp_gt(QJSON_CMP_ARGS);   /* a >  b */
+int qjson_cmp_ge(QJSON_CMP_ARGS);   /* a >= b */
 
 /* ── JS64 encode/decode ─────────────────────────────────── */
 

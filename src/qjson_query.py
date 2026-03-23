@@ -328,7 +328,6 @@ def _interval_comparison(n_alias, op, q_lo, q_hi, q_str, P, has_ext):
     n = n_alias
 
     if op == '==':
-        # Equality: all three columns must match
         sql = ("(%s.lo = %s AND %s.hi = %s AND "
                "((%s.str IS NULL AND %s IS NULL) OR %s.str = %s))"
                % (n, P, n, P, n, P, n, P))
@@ -340,53 +339,36 @@ def _interval_comparison(n_alias, op, q_lo, q_hi, q_str, P, has_ext):
                % (n, P, n, P, n, P, n, P))
         return sql, [q_lo, q_hi, q_str, q_str]
 
-    # Ordering comparisons: interval pushdown
-    if has_ext:
-        # Full 3-tier with libbf fallback
-        if op == '>':
-            sql = ("(%s.hi > %s AND (%s.lo > %s OR "
-                   "qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %s) > 0))"
-                   % (n, P, n, P, n, n, n, P, P, P))
-            return sql, [q_lo, q_hi, q_lo, q_hi, q_str]
-        if op == '>=':
-            sql = ("(%s.hi >= %s AND (%s.lo >= %s OR "
-                   "qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %s) >= 0))"
-                   % (n, P, n, P, n, n, n, P, P, P))
-            return sql, [q_lo, q_hi, q_lo, q_hi, q_str]
-        if op == '<':
-            sql = ("(%s.lo < %s AND (%s.hi < %s OR "
-                   "qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %s) < 0))"
-                   % (n, P, n, P, n, n, n, P, P, P))
-            return sql, [q_hi, q_lo, q_lo, q_hi, q_str]
-        if op == '<=':
-            sql = ("(%s.lo <= %s AND (%s.hi <= %s OR "
-                   "qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %s) <= 0))"
-                   % (n, P, n, P, n, n, n, P, P, P))
-            return sql, [q_hi, q_lo, q_lo, q_hi, q_str]
-    else:
-        # 2-tier without extension (no exact fallback)
-        if op == '>':
-            sql = ("(%s.hi > %s AND (%s.lo > %s"
-                   " OR (%s.str IS NOT NULL AND %s IS NOT NULL)))"
-                   % (n, P, n, P, n, P))
-            return sql, [q_lo, q_hi, q_str]
-        if op == '>=':
-            sql = ("(%s.hi >= %s AND (%s.lo >= %s"
-                   " OR (%s.str IS NOT NULL AND %s IS NOT NULL)))"
-                   % (n, P, n, P, n, P))
-            return sql, [q_lo, q_hi, q_str]
-        if op == '<':
-            sql = ("(%s.lo < %s AND (%s.hi < %s"
-                   " OR (%s.str IS NOT NULL AND %s IS NOT NULL)))"
-                   % (n, P, n, P, n, P))
-            return sql, [q_hi, q_lo, q_str]
-        if op == '<=':
-            sql = ("(%s.lo <= %s AND (%s.hi <= %s"
-                   " OR (%s.str IS NOT NULL AND %s IS NOT NULL)))"
-                   % (n, P, n, P, n, P))
-            return sql, [q_hi, q_lo, q_str]
+    # Ordering: bracket pre-filter + qjson_cmp_[op] exact fallback
+    op_map = {'>': 'qjson_cmp_gt', '>=': 'qjson_cmp_ge',
+              '<': 'qjson_cmp_lt', '<=': 'qjson_cmp_le'}
+    fn_name = op_map.get(op)
+    if not fn_name:
+        raise ValueError("Unknown operator: %s" % op)
 
-    raise ValueError("Unknown operator: %s" % op)
+    if has_ext:
+        if op in ('>', '>='):
+            bracket = "%s.hi %s %s" % (n, op, P)
+            bracket_params = [q_lo]
+        else:
+            bracket = "%s.lo %s %s" % (n, op, P)
+            bracket_params = [q_hi]
+
+        sql = ("(%s AND %s(%s.lo, %s.hi, %s.str, %s, %s, %s) = 1)"
+               % (bracket, fn_name, n, n, n, P, P, P))
+        return sql, bracket_params + [q_lo, q_hi, q_str]
+    else:
+        # 2-tier without extension
+        if op in ('>', '>='):
+            sql = ("(%s.hi %s %s AND (%s.lo %s %s"
+                   " OR (%s.str IS NOT NULL AND %s IS NOT NULL)))"
+                   % (n, op, P, n, op, P, n, P))
+            return sql, [q_lo, q_hi, q_str]
+        else:
+            sql = ("(%s.lo %s %s AND (%s.hi %s %s"
+                   " OR (%s.str IS NOT NULL AND %s IS NOT NULL)))"
+                   % (n, op, P, n, op, P, n, P))
+            return sql, [q_hi, q_lo, q_str]
 
 
 # ── High-level query API ─────────────────────────────────────

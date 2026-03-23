@@ -798,37 +798,91 @@ static int _cmp_double_vs_str(double dval, const char *str, int str_len) {
 }
 #endif
 
-int qjson_cmp(int a_type, double a_lo, const char *a_str, int a_str_len, double a_hi,
-              int b_type, double b_lo, const char *b_str, int b_str_len, double b_hi)
-{
-    /* Unbound: compare names if both unbound, otherwise unbound matches all */
-    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
-        if (a_type == QJSON_UNBOUND && b_type == QJSON_UNBOUND) {
-            if (!a_str && !b_str) return 0;
-            if (!a_str) return -1;
-            if (!b_str) return 1;
-            int min = a_str_len < b_str_len ? a_str_len : b_str_len;
-            int r = memcmp(a_str, b_str, min);
-            if (r != 0) return r < 0 ? -1 : 1;
-            return a_str_len < b_str_len ? -1 : a_str_len > b_str_len ? 1 : 0;
-        }
-        return 0; /* unbound matches any concrete value */
-    }
+/* Internal: check if both unbounds have the same name */
+static int _unbound_same_name(const char *a_str, int a_len,
+                              const char *b_str, int b_len) {
+    if (a_len != b_len) return 0;
+    if (a_len == 0) return 1; /* both anonymous empty-name */
+    if (!a_str || !b_str) return (!a_str && !b_str);
+    return memcmp(a_str, b_str, a_len) == 0;
+}
 
-    /* Fast interval checks */
-    if (a_hi < b_lo) return -1;                     /* a definitely < b */
-    if (a_lo > b_hi) return  1;                     /* a definitely > b */
-    if (a_lo == a_hi && b_lo == b_hi) return 0;     /* both exact doubles */
-
-    /* Overlap zone: need exact comparison */
-    if (a_lo == a_hi) {
-        /* a is exact double, b has decimal str */
+/* Internal: compute -1/0/1 ordering for bound (non-unbound) values */
+static int _qjson_cmp_ord(double a_lo, const char *a_str, int a_str_len, double a_hi,
+                           double b_lo, const char *b_str, int b_str_len, double b_hi) {
+    if (a_hi < b_lo) return -1;
+    if (a_lo > b_hi) return  1;
+    if (a_lo == a_hi && b_lo == b_hi) return 0;
+    /* Overlap zone */
+    if (a_lo == a_hi)
         return _cmp_double_vs_str(a_lo, b_str, b_str_len);
-    }
-    if (b_lo == b_hi) {
-        /* b is exact double, a has decimal str */
+    if (b_lo == b_hi)
         return -_cmp_double_vs_str(b_lo, a_str, a_str_len);
-    }
-    /* Both have decimal strings */
     return qjson_decimal_cmp(a_str, a_str_len, b_str, b_str_len);
+}
+
+/*
+ * Six comparison functions.  Each returns 0 or 1.
+ *
+ * Unbound rules:
+ *   Both unbound, same name → treat as equal (like 42 vs 42)
+ *   Otherwise if either is unbound → always 1 (unknown satisfies all)
+ */
+
+int qjson_cmp_eq(QJSON_CMP_ARGS) {
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        if (a_type == QJSON_UNBOUND && b_type == QJSON_UNBOUND)
+            return _unbound_same_name(a_str, a_str_len, b_str, b_str_len) ? 1 : 1;
+            /* same name → eq=1; diff name → unknown=1 */
+        return 1; /* unbound vs concrete → could be equal */
+    }
+    return _qjson_cmp_ord(a_lo, a_str, a_str_len, a_hi,
+                           b_lo, b_str, b_str_len, b_hi) == 0 ? 1 : 0;
+}
+
+int qjson_cmp_ne(QJSON_CMP_ARGS) {
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        if (a_type == QJSON_UNBOUND && b_type == QJSON_UNBOUND)
+            return _unbound_same_name(a_str, a_str_len, b_str, b_str_len) ? 0 : 1;
+        return 1; /* unbound vs concrete → could be not-equal */
+    }
+    return _qjson_cmp_ord(a_lo, a_str, a_str_len, a_hi,
+                           b_lo, b_str, b_str_len, b_hi) != 0 ? 1 : 0;
+}
+
+int qjson_cmp_lt(QJSON_CMP_ARGS) {
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        if (a_type == QJSON_UNBOUND && b_type == QJSON_UNBOUND)
+            return _unbound_same_name(a_str, a_str_len, b_str, b_str_len) ? 0 : 1;
+        return 1;
+    }
+    return _qjson_cmp_ord(a_lo, a_str, a_str_len, a_hi,
+                           b_lo, b_str, b_str_len, b_hi) < 0 ? 1 : 0;
+}
+
+int qjson_cmp_le(QJSON_CMP_ARGS) {
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        /* same-name: le is true (equal implies <=); diff/concrete: unknown=1 */
+        return 1;
+    }
+    return _qjson_cmp_ord(a_lo, a_str, a_str_len, a_hi,
+                           b_lo, b_str, b_str_len, b_hi) <= 0 ? 1 : 0;
+}
+
+int qjson_cmp_gt(QJSON_CMP_ARGS) {
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        if (a_type == QJSON_UNBOUND && b_type == QJSON_UNBOUND)
+            return _unbound_same_name(a_str, a_str_len, b_str, b_str_len) ? 0 : 1;
+        return 1;
+    }
+    return _qjson_cmp_ord(a_lo, a_str, a_str_len, a_hi,
+                           b_lo, b_str, b_str_len, b_hi) > 0 ? 1 : 0;
+}
+
+int qjson_cmp_ge(QJSON_CMP_ARGS) {
+    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) {
+        return 1; /* same-name: ge true (equal); diff/concrete: unknown=1 */
+    }
+    return _qjson_cmp_ord(a_lo, a_str, a_str_len, a_hi,
+                           b_lo, b_str, b_str_len, b_hi) >= 0 ? 1 : 0;
 }

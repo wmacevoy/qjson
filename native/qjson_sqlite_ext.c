@@ -434,36 +434,34 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                         dstr_catf(out, " NOT (%s.lo = %.17g AND %s.hi = %.17g AND %s.str = '%s')",
                                   na, q_lo, na, q_hi, na, raw.buf);
                 } else {
-                    /* Ordering: bracket pre-filter + qjson_cmp with type-aware exact fallback */
+                    /* Ordering: bracket pre-filter + qjson_cmp_[op] exact fallback */
                     dstr q_str_sql; dstr_init(&q_str_sql);
                     if (exact) dstr_cat(&q_str_sql, "NULL");
                     else       dstr_catf(&q_str_sql, "'%s'", raw.buf);
 
-                    /* Map qjson_type enum to integer for SQL. Stored type comes from
-                       a CASE on the value table's type text column. */
-                    const char *stored_type_expr = "CASE "
+                    /* Type expression for stored value */
+                    dstr stype; dstr_init(&stype);
+                    dstr_catf(&stype, "CASE "
                         "WHEN %s.type='number' THEN 3 "
                         "WHEN %s.type='bigint' THEN 4 "
                         "WHEN %s.type='bigdec' THEN 5 "
                         "WHEN %s.type='bigfloat' THEN 6 "
                         "WHEN %s.type='unbound' THEN 11 "
-                        "ELSE 3 END";
-                    dstr stype; dstr_init(&stype);
-                    dstr_catf(&stype, stored_type_expr, nva, nva, nva, nva, nva);
+                        "ELSE 3 END", nva, nva, nva, nva, nva);
 
-                    if (strcmp(op, ">") == 0) {
-                        dstr_catf(out, " (%s.hi > %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) > 0)",
-                                  na, q_lo, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
-                    } else if (strcmp(op, ">=") == 0) {
-                        dstr_catf(out, " (%s.hi >= %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) >= 0)",
-                                  na, q_lo, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
-                    } else if (strcmp(op, "<") == 0) {
-                        dstr_catf(out, " (%s.lo < %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) < 0)",
-                                  na, q_hi, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
-                    } else if (strcmp(op, "<=") == 0) {
-                        dstr_catf(out, " (%s.lo <= %.17g AND qjson_cmp(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) <= 0)",
-                                  na, q_hi, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
-                    }
+                    const char *fn_name;
+                    const char *bracket_op;
+                    if (strcmp(op, ">") == 0)       { fn_name = "qjson_cmp_gt"; bracket_op = "%s.hi > %.17g"; }
+                    else if (strcmp(op, ">=") == 0)  { fn_name = "qjson_cmp_ge"; bracket_op = "%s.hi >= %.17g"; }
+                    else if (strcmp(op, "<") == 0)   { fn_name = "qjson_cmp_lt"; bracket_op = "%s.lo < %.17g"; }
+                    else                            { fn_name = "qjson_cmp_le"; bracket_op = "%s.lo <= %.17g"; }
+
+                    double bracket_val = (strcmp(op, "<") == 0 || strcmp(op, "<=") == 0) ? q_hi : q_lo;
+                    dstr_catf(out, " (");
+                    dstr_catf(out, bracket_op, na, bracket_val);
+                    dstr_catf(out, " AND %s(%s, %s.lo, %s.str, %s.hi, %d, %.17g, %s, %.17g) = 1)",
+                              fn_name, stype.buf, na, na, na, q_type, q_lo, q_str_sql.buf, q_hi);
+
                     dstr_free(&q_str_sql);
                     dstr_free(&stype);
                 }
@@ -892,8 +890,12 @@ static void sql_qjson_decimal_cmp(sqlite3_context *ctx, int argc, sqlite3_value 
     sqlite3_result_int(ctx, qjson_decimal_cmp(a, a_len, b, b_len));
 }
 
-static void sql_qjson_cmp(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
-    /* qjson_cmp(a_type, a_lo, a_str, a_hi, b_type, b_lo, b_str, b_hi) */
+/* Generic wrapper: extract 8 args and call a qjson_cmp_[op] function.
+   SQL signature: qjson_cmp_XX(a_type, a_lo, a_str, a_hi, b_type, b_lo, b_str, b_hi) → 0/1 */
+typedef int (*cmp_op_fn)(QJSON_CMP_ARGS);
+
+static void sql_qjson_cmp_dispatch(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    cmp_op_fn fn = (cmp_op_fn)sqlite3_user_data(ctx);
     int a_type = sqlite3_value_int(argv[0]);
     double a_lo = sqlite3_value_double(argv[1]);
     const char *a_str = (const char *)sqlite3_value_text(argv[2]);
@@ -904,8 +906,8 @@ static void sql_qjson_cmp(sqlite3_context *ctx, int argc, sqlite3_value **argv) 
     const char *b_str = (const char *)sqlite3_value_text(argv[6]);
     int b_str_len = b_str ? sqlite3_value_bytes(argv[6]) : 0;
     double b_hi = sqlite3_value_double(argv[7]);
-    sqlite3_result_int(ctx, qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
-                                       b_type, b_lo, b_str, b_str_len, b_hi));
+    sqlite3_result_int(ctx, fn(a_type, a_lo, a_str, a_str_len, a_hi,
+                                b_type, b_lo, b_str, b_str_len, b_hi));
 }
 
 /* ── Extension entry point ──────────────────────────────── */
@@ -918,8 +920,18 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
 
     sqlite3_create_function(db, "qjson_decimal_cmp", 2,
         SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_qjson_decimal_cmp, NULL, NULL);
-    sqlite3_create_function(db, "qjson_cmp", 8,
-        SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, sql_qjson_cmp, NULL, NULL);
+
+    /* Register all six comparison functions (8 args each, returns 0/1) */
+    struct { const char *name; cmp_op_fn fn; } ops[] = {
+        {"qjson_cmp_lt", qjson_cmp_lt}, {"qjson_cmp_le", qjson_cmp_le},
+        {"qjson_cmp_eq", qjson_cmp_eq}, {"qjson_cmp_ne", qjson_cmp_ne},
+        {"qjson_cmp_gt", qjson_cmp_gt}, {"qjson_cmp_ge", qjson_cmp_ge},
+    };
+    for (int i = 0; i < 6; i++)
+        sqlite3_create_function(db, ops[i].name, 8,
+            SQLITE_UTF8 | SQLITE_DETERMINISTIC, (void *)ops[i].fn,
+            sql_qjson_cmp_dispatch, NULL, NULL);
+
     sqlite3_create_function(db, "qjson_reconstruct", -1,
         SQLITE_UTF8, NULL, sql_qjson_reconstruct, NULL, NULL);
 

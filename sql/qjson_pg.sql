@@ -41,20 +41,110 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql IMMUTABLE STRICT;
 
--- ── Full 3-tier interval comparison ─────────────────────────
+-- ── Internal: raw ordering for bound values ─────────────────
 
-CREATE OR REPLACE FUNCTION qjson_cmp(
+CREATE OR REPLACE FUNCTION _qjson_cmp_ord(
     a_lo DOUBLE PRECISION, a_hi DOUBLE PRECISION, a_str TEXT,
     b_lo DOUBLE PRECISION, b_hi DOUBLE PRECISION, b_str TEXT
 ) RETURNS INTEGER AS $$
 BEGIN
-    -- [brackets]: intervals separated
     IF a_hi < b_lo THEN RETURN -1; END IF;
     IF a_lo > b_hi THEN RETURN  1; END IF;
-    -- {braces}: both exact doubles
     IF a_lo = a_hi AND b_lo = b_hi THEN RETURN 0; END IF;
-    -- val(): exact string fallback
     RETURN qjson_decimal_cmp(a_str, b_str);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- ── Internal: check if two unbound names match ──────────────
+
+CREATE OR REPLACE FUNCTION _qjson_unbound_same(a_str TEXT, b_str TEXT)
+RETURNS BOOLEAN AS $$
+BEGIN
+    RETURN COALESCE(a_str, '') = COALESCE(b_str, '');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- ── Six comparison functions (each returns 0 or 1) ──────────
+-- a_type/b_type: text type name from qjson_value.type column.
+-- Unbound rules:
+--   same-name unbounds → behave as equal
+--   different-name or unbound-vs-concrete → always 1
+
+CREATE OR REPLACE FUNCTION qjson_cmp_eq(
+    a_type TEXT, a_lo DOUBLE PRECISION, a_str TEXT, a_hi DOUBLE PRECISION,
+    b_type TEXT, b_lo DOUBLE PRECISION, b_str TEXT, b_hi DOUBLE PRECISION
+) RETURNS INTEGER AS $$
+BEGIN
+    IF a_type = 'unbound' OR b_type = 'unbound' THEN RETURN 1; END IF;
+    IF _qjson_cmp_ord(a_lo, a_hi, a_str, b_lo, b_hi, b_str) = 0 THEN RETURN 1; END IF;
+    RETURN 0;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION qjson_cmp_ne(
+    a_type TEXT, a_lo DOUBLE PRECISION, a_str TEXT, a_hi DOUBLE PRECISION,
+    b_type TEXT, b_lo DOUBLE PRECISION, b_str TEXT, b_hi DOUBLE PRECISION
+) RETURNS INTEGER AS $$
+BEGIN
+    IF a_type = 'unbound' AND b_type = 'unbound' THEN
+        IF _qjson_unbound_same(a_str, b_str) THEN RETURN 0; END IF;
+        RETURN 1;
+    END IF;
+    IF a_type = 'unbound' OR b_type = 'unbound' THEN RETURN 1; END IF;
+    IF _qjson_cmp_ord(a_lo, a_hi, a_str, b_lo, b_hi, b_str) != 0 THEN RETURN 1; END IF;
+    RETURN 0;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION qjson_cmp_lt(
+    a_type TEXT, a_lo DOUBLE PRECISION, a_str TEXT, a_hi DOUBLE PRECISION,
+    b_type TEXT, b_lo DOUBLE PRECISION, b_str TEXT, b_hi DOUBLE PRECISION
+) RETURNS INTEGER AS $$
+BEGIN
+    IF a_type = 'unbound' AND b_type = 'unbound' THEN
+        IF _qjson_unbound_same(a_str, b_str) THEN RETURN 0; END IF;
+        RETURN 1;
+    END IF;
+    IF a_type = 'unbound' OR b_type = 'unbound' THEN RETURN 1; END IF;
+    IF _qjson_cmp_ord(a_lo, a_hi, a_str, b_lo, b_hi, b_str) < 0 THEN RETURN 1; END IF;
+    RETURN 0;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION qjson_cmp_le(
+    a_type TEXT, a_lo DOUBLE PRECISION, a_str TEXT, a_hi DOUBLE PRECISION,
+    b_type TEXT, b_lo DOUBLE PRECISION, b_str TEXT, b_hi DOUBLE PRECISION
+) RETURNS INTEGER AS $$
+BEGIN
+    IF a_type = 'unbound' OR b_type = 'unbound' THEN RETURN 1; END IF;
+    IF _qjson_cmp_ord(a_lo, a_hi, a_str, b_lo, b_hi, b_str) <= 0 THEN RETURN 1; END IF;
+    RETURN 0;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION qjson_cmp_gt(
+    a_type TEXT, a_lo DOUBLE PRECISION, a_str TEXT, a_hi DOUBLE PRECISION,
+    b_type TEXT, b_lo DOUBLE PRECISION, b_str TEXT, b_hi DOUBLE PRECISION
+) RETURNS INTEGER AS $$
+BEGIN
+    IF a_type = 'unbound' AND b_type = 'unbound' THEN
+        IF _qjson_unbound_same(a_str, b_str) THEN RETURN 0; END IF;
+        RETURN 1;
+    END IF;
+    IF a_type = 'unbound' OR b_type = 'unbound' THEN RETURN 1; END IF;
+    IF _qjson_cmp_ord(a_lo, a_hi, a_str, b_lo, b_hi, b_str) > 0 THEN RETURN 1; END IF;
+    RETURN 0;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION qjson_cmp_ge(
+    a_type TEXT, a_lo DOUBLE PRECISION, a_str TEXT, a_hi DOUBLE PRECISION,
+    b_type TEXT, b_lo DOUBLE PRECISION, b_str TEXT, b_hi DOUBLE PRECISION
+) RETURNS INTEGER AS $$
+BEGIN
+    IF a_type = 'unbound' OR b_type = 'unbound' THEN RETURN 1; END IF;
+    IF _qjson_cmp_ord(a_lo, a_hi, a_str, b_lo, b_hi, b_str) >= 0 THEN RETURN 1; END IF;
+    RETURN 0;
 END;
 $$ LANGUAGE plpgsql IMMUTABLE;
 
@@ -651,20 +741,20 @@ BEGIN
                         n_alias, q_lo, n_alias, q_hi, n_alias, q_str, n_alias, q_str);
                 ELSIF op = '>' THEN
                     result := result || format(
-                        ' (%s.hi > %s AND (%s.lo > %s OR qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %L) > 0))',
-                        n_alias, q_lo, n_alias, q_hi, n_alias, n_alias, n_alias, q_lo, q_hi, q_str);
+                        ' (%s.hi > %s AND qjson_cmp_gt(v_t.type, %s.lo, %s.str, %s.hi, %L, %s, %L, %s) = 1)',
+                        n_alias, q_lo, n_alias, n_alias, n_alias, q_type_str, q_lo, q_str, q_hi);
                 ELSIF op = '>=' THEN
                     result := result || format(
-                        ' (%s.hi >= %s AND (%s.lo >= %s OR qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %L) >= 0))',
-                        n_alias, q_lo, n_alias, q_hi, n_alias, n_alias, n_alias, q_lo, q_hi, q_str);
+                        ' (%s.hi >= %s AND qjson_cmp_ge(v_t.type, %s.lo, %s.str, %s.hi, %L, %s, %L, %s) = 1)',
+                        n_alias, q_lo, n_alias, n_alias, n_alias, q_type_str, q_lo, q_str, q_hi);
                 ELSIF op = '<' THEN
                     result := result || format(
-                        ' (%s.lo < %s AND (%s.hi < %s OR qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %L) < 0))',
-                        n_alias, q_hi, n_alias, q_lo, n_alias, n_alias, n_alias, q_lo, q_hi, q_str);
+                        ' (%s.lo < %s AND qjson_cmp_lt(v_t.type, %s.lo, %s.str, %s.hi, %L, %s, %L, %s) = 1)',
+                        n_alias, q_hi, n_alias, n_alias, n_alias, q_type_str, q_lo, q_str, q_hi);
                 ELSIF op = '<=' THEN
                     result := result || format(
-                        ' (%s.lo <= %s AND (%s.hi <= %s OR qjson_cmp(%s.lo, %s.hi, %s.str, %s, %s, %L) <= 0))',
-                        n_alias, q_hi, n_alias, q_lo, n_alias, n_alias, n_alias, q_lo, q_hi, q_str);
+                        ' (%s.lo <= %s AND qjson_cmp_le(v_t.type, %s.lo, %s.str, %s.hi, %L, %s, %L, %s) = 1)',
+                        n_alias, q_hi, n_alias, n_alias, n_alias, q_type_str, q_lo, q_str, q_hi);
                 END IF;
             END IF;
 

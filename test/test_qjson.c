@@ -266,28 +266,29 @@ static void test_decimal_cmp(void) {
  *   a <op> b = (interval_accept) OR ((interval_not_reject) AND cmp <op> 0)
  */
 
-/* Helper: project + qjson_cmp in one call.
-   Treats both sides as QJSON_BIGDEC (has str) since they come from raw strings. */
-static int cmp(const char *a, const char *b) {
+/* Helper: project and call a qjson_cmp_[op] function. */
+typedef int (*cmp_fn)(QJSON_CMP_ARGS);
+
+static int cmpop(const char *a, const char *b, cmp_fn fn) {
     double a_lo, a_hi, b_lo, b_hi;
     qjson_project(a, strlen(a), &a_lo, &a_hi);
     qjson_project(b, strlen(b), &b_lo, &b_hi);
-    const char *a_str = (a_lo == a_hi) ? NULL : a;
-    int a_str_len = (a_lo == a_hi) ? 0 : (int)strlen(a);
-    const char *b_str = (b_lo == b_hi) ? NULL : b;
-    int b_str_len = (b_lo == b_hi) ? 0 : (int)strlen(b);
     int a_type = (a_lo == a_hi) ? QJSON_NUM : QJSON_BIGDEC;
     int b_type = (b_lo == b_hi) ? QJSON_NUM : QJSON_BIGDEC;
-    return qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
-                     b_type, b_lo, b_str, b_str_len, b_hi);
+    const char *a_str = (a_lo == a_hi) ? NULL : a;
+    int a_sl = (a_lo == a_hi) ? 0 : (int)strlen(a);
+    const char *b_str = (b_lo == b_hi) ? NULL : b;
+    int b_sl = (b_lo == b_hi) ? 0 : (int)strlen(b);
+    return fn(a_type, a_lo, a_str, a_sl, a_hi,
+              b_type, b_lo, b_str, b_sl, b_hi);
 }
 
-#define LT(a, b)  (cmp(a, b) <  0)
-#define LE(a, b)  (cmp(a, b) <= 0)
-#define GT(a, b)  (cmp(a, b) >  0)
-#define GE(a, b)  (cmp(a, b) >= 0)
-#define EQ(a, b)  (cmp(a, b) == 0)
-#define NE(a, b)  (cmp(a, b) != 0)
+#define LT(a, b)  cmpop(a, b, qjson_cmp_lt)
+#define LE(a, b)  cmpop(a, b, qjson_cmp_le)
+#define GT(a, b)  cmpop(a, b, qjson_cmp_gt)
+#define GE(a, b)  cmpop(a, b, qjson_cmp_ge)
+#define EQ(a, b)  cmpop(a, b, qjson_cmp_eq)
+#define NE(a, b)  cmpop(a, b, qjson_cmp_ne)
 
 static void test_interval_cmp(void) {
     printf("\n=== Interval comparison logic ===\n");
@@ -598,32 +599,53 @@ static void test_cmp_fix(void) {
     d_lo = d_hi = 0.3; /* exact double */
 
     /* Old bug: this would call qjson_decimal_cmp with NULL str */
-    int r = qjson_cmp(QJSON_BIGDEC, m_lo, "0.3", 3, m_hi,
-                       QJSON_NUM, d_lo, NULL, 0, d_hi);
-    TEST("0.3M != 0.3 (double)", r != 0);
-    TEST("0.3M > 0.3 (double)", r > 0); /* exact 0.3 > ieee double 0.2999... */
+    /* 0.3M != 0.3 (double): exact 0.3 > ieee double 0.2999... */
+    TEST("0.3M != 0.3", qjson_cmp_ne(QJSON_BIGDEC, m_lo, "0.3", 3, m_hi,
+                                      QJSON_NUM, d_lo, NULL, 0, d_hi));
+    TEST("0.3M > 0.3",  qjson_cmp_gt(QJSON_BIGDEC, m_lo, "0.3", 3, m_hi,
+                                      QJSON_NUM, d_lo, NULL, 0, d_hi));
 
     /* 0.5M vs 0.5: same value, both exact */
     qjson_project("0.5", 3, &m_lo, &m_hi);
     d_lo = d_hi = 0.5;
-    r = qjson_cmp(QJSON_BIGDEC, m_lo, NULL, 0, m_hi,
-                   QJSON_NUM, d_lo, NULL, 0, d_hi);
-    TEST("0.5M == 0.5 (double)", r == 0);
+    TEST("0.5M == 0.5", qjson_cmp_eq(QJSON_BIGDEC, m_lo, NULL, 0, m_hi,
+                                      QJSON_NUM, d_lo, NULL, 0, d_hi));
 
-    /* Unbound vs unbound: same name → equal */
-    r = qjson_cmp(QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY,
-                   QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY);
-    TEST("?X == ?X", r == 0);
+    /* ── Unbound comparison tests ─────────────────────────── */
 
-    /* Unbound vs unbound: different name → not equal */
-    r = qjson_cmp(QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY,
-                   QJSON_UNBOUND, -INFINITY, "?Y", 2, INFINITY);
-    TEST("?X != ?Y", r != 0);
+    /* Same name: behaves as equal */
+    TEST("?X eq ?X",  qjson_cmp_eq(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY));
+    TEST("?X !ne ?X", !qjson_cmp_ne(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                     QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY));
+    TEST("?X le ?X",  qjson_cmp_le(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY));
+    TEST("?X ge ?X",  qjson_cmp_ge(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY));
+    TEST("?X !lt ?X", !qjson_cmp_lt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                     QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY));
+    TEST("?X !gt ?X", !qjson_cmp_gt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                     QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY));
 
-    /* Unbound vs concrete: matches (returns 0) */
-    r = qjson_cmp(QJSON_UNBOUND, -INFINITY, "?X", 2, INFINITY,
-                   QJSON_NUM, 42.0, NULL, 0, 42.0);
-    TEST("?X matches 42", r == 0);
+    /* Different names: all operators true (unknown) */
+    TEST("?X eq ?Y",  qjson_cmp_eq(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "Y", 1, INFINITY));
+    TEST("?X ne ?Y",  qjson_cmp_ne(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "Y", 1, INFINITY));
+    TEST("?X lt ?Y",  qjson_cmp_lt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "Y", 1, INFINITY));
+    TEST("?X gt ?Y",  qjson_cmp_gt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_UNBOUND, -INFINITY, "Y", 1, INFINITY));
+
+    /* Unbound vs concrete: all operators true (unknown) */
+    TEST("?X eq 42",  qjson_cmp_eq(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+    TEST("?X ne 42",  qjson_cmp_ne(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+    TEST("?X lt 42",  qjson_cmp_lt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+    TEST("?X gt 42",  qjson_cmp_gt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
+                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
 }
 
 /* -- Benchmark ------------------------------------------------ */

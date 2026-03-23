@@ -624,33 +624,36 @@ decode when both values are exact doubles.  `val()` only
 fires when intervals overlap and at least one value is
 non-exact.
 
-### qjson_cmp (C API)
+### qjson_cmp_[op] (C API)
+
+Six operator-specific functions, each returning 0 (false) or 1 (true):
 
 ```c
-int qjson_cmp(a_type, a_lo, a_str, a_str_len, a_hi,
-              b_type, b_lo, b_str, b_str_len, b_hi) {
-    // Unbound: compare names if both unbound, else matches any
-    if (a_type == QJSON_UNBOUND || b_type == QJSON_UNBOUND) ...
-    if (a_hi < b_lo) return -1;                  // [brackets]: separated
-    if (a_lo > b_hi) return  1;                  // [brackets]: separated
-    if (a_lo == a_hi && b_lo == b_hi) return 0;  // {braces}: both exact
-    // Overlap: resolve exact value using type
-    // If lo == hi → exact double (val = lo); else exact(type, str) via libbf
-    ...
-}
+int qjson_cmp_lt(a_type, a_lo, a_str, a_len, a_hi,
+                 b_type, b_lo, b_str, b_len, b_hi);  // a <  b
+int qjson_cmp_le(...)   // a <= b
+int qjson_cmp_eq(...)   // a == b
+int qjson_cmp_ne(...)   // a != b
+int qjson_cmp_gt(...)   // a >  b
+int qjson_cmp_ge(...)   // a >= b
 ```
 
-The `type` parameter is the `qjson_type` enum value.  Needed to
-resolve exact values when one side is an exact double (str=NULL)
-and the other has a decimal string, and to handle unbound variables.
+Unbound semantics:
 
-All ordering operators: `qjson_cmp(...) <op> 0`.
-Equality: compare `[lo, str, hi]` columns directly.
+| Case | lt | le | eq | ne | gt | ge |
+|------|----|----|----|----|----|----|
+| `?X` vs `?X` (same name) | 0 | 1 | 1 | 0 | 0 | 1 |
+| `?X` vs `?Y` (diff name) | 1 | 1 | 1 | 1 | 1 | 1 |
+| `?X` vs `42` (unbound vs concrete) | 1 | 1 | 1 | 1 | 1 | 1 |
+
+Same-name unbounds behave as equal (bound to same value).
+Different-name or unbound-vs-concrete: all operators return 1
+(unknown — could satisfy any relation).
 
 ### Database extensions
 
-The `qjson_cmp` and `qjson_decimal_cmp` functions are available
-as database extensions for exact comparison inside SQL:
+The `qjson_cmp_[op]` and `qjson_decimal_cmp` functions are
+available as database extensions for exact comparison inside SQL:
 
 | Database | Mechanism | Exact math |
 |----------|-----------|------------|
@@ -784,15 +787,14 @@ roundUp("3.14159265358979323846")   = 3.1415926535897936
 str = "3.14159265358979323846"
 ```
 
-Generated SQL (3-tier comparison):
+Generated SQL:
 
 ```sql
 WHERE n.hi > 3.141592653589793                          -- [brackets]: index scan
-  AND (n.lo > 3.1415926535897936                        -- {braces}: both exact
-       OR qjson_cmp(v.type_id, n.lo, n.str, n.hi,
-                    5, 3.141592653589793,
-                    '3.14159265358979323846',
-                    3.1415926535897936) > 0)             -- val(): exact fallback
+  AND qjson_cmp_gt(v.type, n.lo, n.str, n.hi,
+                   'bigfloat', 3.141592653589793,
+                   '3.14159265358979323846',
+                   3.1415926535897936) = 1               -- exact fallback
 ```
 
 The indexed `hi` column eliminates most rows.  The `lo` check
