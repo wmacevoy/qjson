@@ -307,23 +307,34 @@ def _compile_comparison(vid_expr, op, val_type, val_val, builder, has_ext):
         if q_lo != q_hi:
             q_str = raw_num
 
-        # Join to number table
+        # Join to number table + value table (for type)
         n = builder._alias("n")
         builder._joins.append(
             'JOIN %s %s ON %s.value_id = %s' % (t_number, n, n, vid_expr))
+        vt = builder._alias("vt")
+        builder._joins.append(
+            'JOIN %s %s ON %s.id = %s' % (t_value, vt, vt, vid_expr))
 
-        return _interval_comparison(n, op, q_lo, q_hi, q_str, P, has_ext)
+        # Query literal type
+        q_type = 'number'
+        if suffix in ('N', 'n'):
+            q_type = 'bigint'
+        elif suffix in ('M', 'm'):
+            q_type = 'bigdec'
+        elif suffix in ('L', 'l'):
+            q_type = 'bigfloat'
+
+        return _interval_comparison(n, vt, op, q_lo, q_hi, q_str, q_type, P, has_ext)
 
     raise ValueError("Unknown value type: %r" % val_type)
 
 
-def _interval_comparison(n_alias, op, q_lo, q_hi, q_str, P, has_ext):
+def _interval_comparison(n_alias, vt_alias, op, q_lo, q_hi, q_str, q_type, P, has_ext):
     """Generate interval-pushdown SQL for a numeric comparison.
 
-    Uses 3-tier comparison:
-      1. [brackets] on lo/hi (indexed)
-      2. {braces} when both exact
-      3. qjson_decimal_cmp() for overlap zone (if extension loaded)
+    n_alias  — alias for the number table
+    vt_alias — alias for the value table (provides stored type)
+    q_type   — query literal's type string ('number', 'bigdec', etc.)
     """
     n = n_alias
 
@@ -354,9 +365,10 @@ def _interval_comparison(n_alias, op, q_lo, q_hi, q_str, P, has_ext):
             bracket = "%s.lo %s %s" % (n, op, P)
             bracket_params = [q_hi]
 
-        sql = ("(%s AND %s(%s.lo, %s.hi, %s.str, %s, %s, %s) = 1)"
-               % (bracket, fn_name, n, n, n, P, P, P))
-        return sql, bracket_params + [q_lo, q_hi, q_str]
+        # qjson_cmp_XX(a_type, a_lo, a_str, a_hi, b_type, b_lo, b_str, b_hi) → 0/1
+        sql = ("(%s AND %s(%s.type, %s.lo, %s.str, %s.hi, %s, %s, %s, %s) = 1)"
+               % (bracket, fn_name, vt_alias, n, n, n, P, P, P, P))
+        return sql, bracket_params + [q_type, q_lo, q_str, q_hi]
     else:
         # 2-tier without extension
         if op in ('>', '>='):

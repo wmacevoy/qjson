@@ -119,9 +119,28 @@ Unbound projects to `[-Inf, "?name", +Inf]`:
 The universal interval passes through all range comparisons
 without constraining — an unbound variable matches everything.
 
-### Use case
+### Use cases
 
-Prolog facts are QJSON arrays.  Unbound slots make patterns:
+**CRUD pattern matching.**  QJSON values double as query patterns.
+Unbound slots are the "holes" — fill in what you know, leave `?`
+for what you want:
+
+```
+// Data
+{id: 1, item: "book",   price: 9.99M,   delivered: true}
+{id: 2, item: "laptop", price: 999.99M, delivered: false}
+
+// "all delivered orders"
+{id: ?, item: ?, price: ?, delivered: true}
+
+// "delivery status of order 2"
+{id: 2, delivered: ?}
+
+// "orders over $10"
+WHERE .orders[K].price > 10M
+```
+
+**Prolog-style facts.**  Unbound slots in arrays make patterns:
 
 ```
 [reading, sensor1, temp, 35]       // fact
