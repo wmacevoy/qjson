@@ -344,12 +344,20 @@ def test_unbound_parse_bare():
 def test_unbound_parse_anonymous():
     v = parse('?')
     assert isinstance(v, Unbound)
-    assert v.name == '_'
+    assert v.name == ''
 
 def test_unbound_parse_underscore():
     v = parse('?_')
     assert isinstance(v, Unbound)
     assert v.name == '_'
+
+def test_unbound_anon_vs_underscore():
+    """? and ?_ are distinct."""
+    anon = parse('?')
+    under = parse('?_')
+    assert anon.name == ''
+    assert under.name == '_'
+    assert anon != under
 
 def test_unbound_parse_multichar():
     v = parse('?myVar_1')
@@ -376,6 +384,9 @@ def test_unbound_stringify_bare():
     assert stringify(Unbound('X')) == '?X'
 
 def test_unbound_stringify_anonymous():
+    assert stringify(Unbound('')) == '?'
+
+def test_unbound_stringify_underscore():
     assert stringify(Unbound('_')) == '?_'
 
 def test_unbound_stringify_quoted():
@@ -402,12 +413,14 @@ def test_unbound_equality():
 test("Unbound parse bare", test_unbound_parse_bare)
 test("Unbound parse anonymous", test_unbound_parse_anonymous)
 test("Unbound parse underscore", test_unbound_parse_underscore)
+test("Unbound anon vs underscore", test_unbound_anon_vs_underscore)
 test("Unbound parse multi-char", test_unbound_parse_multichar)
 test("Unbound parse quoted", test_unbound_parse_quoted)
 test("Unbound in array", test_unbound_in_array)
 test("Unbound in object", test_unbound_in_object)
 test("Unbound stringify bare", test_unbound_stringify_bare)
 test("Unbound stringify anonymous", test_unbound_stringify_anonymous)
+test("Unbound stringify underscore", test_unbound_stringify_underscore)
 test("Unbound stringify quoted", test_unbound_stringify_quoted)
 test("Unbound round-trip bare", test_unbound_roundtrip_bare)
 test("Unbound round-trip quoted", test_unbound_roundtrip_quoted)

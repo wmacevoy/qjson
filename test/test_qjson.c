@@ -528,7 +528,7 @@ static void test_parse_unbound(void) {
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "?", 1);
-    TEST("parse ? anonymous", v && v->type == QJSON_UNBOUND && strcmp(v->str.s, "_") == 0);
+    TEST("parse ? anonymous", v && v->type == QJSON_UNBOUND && v->str.len == 0);
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "?_", 2);

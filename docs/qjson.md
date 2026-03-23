@@ -93,8 +93,9 @@ conflict with `${}` template interpolation.
 ## Unbound variables: `?` prefix
 
 ```
+?                     anonymous (empty name)
 ?X                    bare identifier
-?_                    anonymous (same as bare ?)
+?_                    named "_" (not the same as bare ?)
 ?myVar_1              alphanumeric + underscore
 ?"Bob's Last Memo"    quoted string — any content
 ```
@@ -102,7 +103,8 @@ conflict with `${}` template interpolation.
 An unbound variable represents "match anything".  It is a leaf
 value like a number or string.  The name after `?` can be a bare
 identifier or a quoted string (same quoting rules as object keys).
-`?` alone is shorthand for `?_` (anonymous).
+`?` alone is anonymous — it has an empty name and never binds
+to another `?`.  `?_` is a named variable (name is `_`).
 
 ### Projection
 
@@ -111,7 +113,7 @@ Unbound projects to `[-Inf, "?name", +Inf]`:
 | Column | Value |
 |--------|-------|
 | lo | `-Infinity` |
-| str | `"?X"` (the `?` prefix + name) |
+| str | `"?"` (anonymous) or `"?X"` (named) |
 | hi | `+Infinity` |
 
 The universal interval passes through all range comparisons
@@ -124,10 +126,12 @@ Prolog facts are QJSON arrays.  Unbound slots make patterns:
 ```
 [reading, sensor1, temp, 35]       // fact
 [reading, ?From, temp, ?Val]       // pattern — matches the fact
+[reading, ?, temp, ?]              // anonymous — matches but doesn't bind
 ```
 
-Two unbounds with the same name must bind to the same value.
-Two unbounds with different names are independent.
+Two named unbounds with the same name must bind to the same value.
+Two named unbounds with different names are independent.
+Anonymous unbounds (`?`) never bind — each one is independent.
 
 ## Comments
 

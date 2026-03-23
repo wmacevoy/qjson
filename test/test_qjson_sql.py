@@ -82,6 +82,7 @@ def test_classify():
     assert _classify_value([1, 2]) == ('array', None)
     assert _classify_value({'a': 1}) == ('object', None)
     assert _classify_value(Unbound('X')) == ('unbound', 'X')
+    assert _classify_value(Unbound('')) == ('unbound', '')
     assert _classify_value(Unbound('_')) == ('unbound', '_')
     print('  _classify_value: OK')
 
@@ -180,12 +181,17 @@ def run_adapter_tests(adapter, label):
     assert isinstance(v['price'], Decimal)
     assert isinstance(v['items'][0], BigInt)
 
-    # Unbound — bare name
+    # Unbound — named
     vid = a['store'](Unbound('X'))
     v = a['load'](vid)
     assert isinstance(v, Unbound) and v.name == 'X'
 
-    # Unbound — anonymous
+    # Unbound — anonymous (empty name)
+    vid = a['store'](Unbound(''))
+    v = a['load'](vid)
+    assert isinstance(v, Unbound) and v.name == ''
+
+    # Unbound — named "_" (distinct from anonymous)
     vid = a['store'](Unbound('_'))
     v = a['load'](vid)
     assert isinstance(v, Unbound) and v.name == '_'

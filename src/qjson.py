@@ -145,7 +145,7 @@ class Unbound:
     """
     __slots__ = ("name",)
 
-    def __init__(self, name="_"):
+    def __init__(self, name=""):
         self.name = str(name)
 
     def __repr__(self):
@@ -353,7 +353,7 @@ class _Parser:
                     self.pos += 1
                 else:
                     break
-            name = self.text[start:self.pos] if self.pos > start else "_"
+            name = self.text[start:self.pos] if self.pos > start else ""
         return Unbound(name)
 
     def obj(self):
@@ -416,6 +416,8 @@ def _fmt(obj, ind, depth):
     if isinstance(obj, Unbound):
         import re
         name = obj.name
+        if name == "":
+            return "?"
         if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
             return "?" + name
         return "?" + _esc(name)

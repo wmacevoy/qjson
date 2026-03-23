@@ -79,7 +79,7 @@ function js64_encode(blob) {
 function Unbound(name) {
   if (!(this instanceof Unbound)) return new Unbound(name);
   this.$qjson = "unbound";
-  this.name = (name === undefined || name === null) ? "_" : String(name);
+  this.name = (name === undefined || name === null) ? "" : String(name);
 }
 
 // ── Parser ──────────────────────────────────────────────────
@@ -258,7 +258,7 @@ function qjson_parse(text) {
             (uc >= "0" && uc <= "9") || uc === "_") pos++;
         else break;
       }
-      name = pos > start ? text.substring(start, pos) : "_";
+      name = pos > start ? text.substring(start, pos) : "";
     }
     return new Unbound(name);
   }
@@ -325,7 +325,8 @@ function _fmt(obj) {
   }
   // Unbound
   if (typeof obj === "object" && obj !== null && obj.$qjson === "unbound") {
-    var uname = obj.name || "_";
+    var uname = obj.name;
+    if (uname === "" || uname === undefined || uname === null) return "?";
     if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(uname)) return "?" + uname;
     return "?" + _esc(uname);
   }

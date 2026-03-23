@@ -198,7 +198,7 @@ function _classifyValue(value) {
     return { type: "string", raw: null };
   }
   if (typeof value === "object" && value !== null) {
-    if (value.$qjson === "unbound") return { type: "unbound", raw: value.name || "_" };
+    if (value.$qjson === "unbound") return { type: "unbound", raw: (value.name != null) ? value.name : "" };
     if (value.$qjson === "blob") return { type: "blob", raw: null };
     if (Array.isArray(value)) return { type: "array", raw: null };
     return { type: "object", raw: null };
@@ -346,7 +346,7 @@ function qjsonSqlAdapter(db, options) {
 
     if (type === "unbound") {
       var nr = _stmt('SELECT str FROM "' + _tNumber + '" WHERE value_id = ?').get(vid);
-      var name = (nr && nr.str) ? nr.str : "?_";
+      var name = (nr && nr.str) ? nr.str : "?";
       if (name.charAt(0) === "?") name = name.substring(1);
       return { $qjson: "unbound", name: name };
     }

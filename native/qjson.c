@@ -454,9 +454,9 @@ static qjson_val *parse_unbound(pstate *p) {
             else break;
         }
         if (p->pos == start) {
-            /* Just '?' alone → anonymous "_" */
-            name = arena_strdup(p->arena, "_", 1);
-            name_len = 1;
+            /* Just '?' alone → anonymous (empty name) */
+            name = arena_strdup(p->arena, "", 0);
+            name_len = 0;
         } else {
             name_len = p->pos - start;
             name = arena_strdup(p->arena, p->s + start, name_len);

@@ -449,7 +449,7 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
             nr = _fetchone(
                 'SELECT str FROM "%s" WHERE value_id = %s'
                 % (t_number, P), (vid,))
-            name = nr[0] if nr and nr[0] else "?_"
+            name = nr[0] if nr and nr[0] else "?"
             if name.startswith("?"):
                 name = name[1:]
             return Unbound(name)
