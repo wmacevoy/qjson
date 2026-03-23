@@ -910,6 +910,171 @@ static void sql_qjson_cmp_dispatch(sqlite3_context *ctx, int argc, sqlite3_value
                                 b_type, b_lo, b_str, b_str_len, b_hi));
 }
 
+/* ── Exact arithmetic via libbf ─────────────────────────── */
+/*
+ * All arithmetic functions take and return TEXT (decimal strings).
+ * Precision is 113 bits (~34 decimal digits) by default — IEEE 754
+ * quad precision.  Division and transcendentals accept an optional
+ * last argument for custom precision in decimal digits.
+ *
+ * qjson_add(a, b)          qjson_neg(a)
+ * qjson_sub(a, b)          qjson_abs(a)
+ * qjson_mul(a, b)          qjson_sqrt(a [, prec])
+ * qjson_div(a, b [, prec]) qjson_exp(a [, prec])
+ * qjson_pow(a, b [, prec]) qjson_log(a [, prec])
+ * qjson_sin(a [, prec])    qjson_cos(a [, prec])
+ * qjson_tan(a [, prec])    qjson_atan(a [, prec])
+ * qjson_asin(a [, prec])   qjson_acos(a [, prec])
+ * qjson_pi([prec])
+ */
+
+#ifdef QJSON_USE_LIBBF
+#include "libbf.h"
+
+static void *_math_realloc(void *opaque, void *ptr, size_t size) {
+    (void)opaque;
+    if (size == 0) { sqlite3_free(ptr); return NULL; }
+    return sqlite3_realloc(ptr, (int)size);
+}
+
+/* Default precision: 113 bits ≈ 34 decimal digits (IEEE 754 quad) */
+#define QJSON_DEFAULT_PREC 113
+
+static limb_t _get_prec(sqlite3_value *arg) {
+    if (!arg || sqlite3_value_type(arg) == SQLITE_NULL) return QJSON_DEFAULT_PREC;
+    int digits = sqlite3_value_int(arg);
+    if (digits <= 0) digits = 34;
+    /* ~3.32 bits per decimal digit */
+    return (limb_t)(digits * 3.32193 + 10);
+}
+
+static int _bf_parse(bf_context_t *ctx, bf_t *v, sqlite3_value *arg) {
+    if (sqlite3_value_type(arg) == SQLITE_NULL) return -1;
+    const char *s = (const char *)sqlite3_value_text(arg);
+    if (!s) return -1;
+    bf_init(ctx, v);
+    bf_atof(v, s, NULL, 10, BF_PREC_INF, BF_RNDN);
+    return 0;
+}
+
+static void _bf_result_prec(sqlite3_context *ctx, bf_t *v, bf_context_t *bfctx, limb_t prec) {
+    size_t len;
+    /* Convert binary precision (bits) to decimal digits: bits / log2(10) ≈ bits / 3.32 */
+    limb_t digits = (prec > 10) ? (limb_t)(prec / 3.32) + 2 : 36;
+    char *s = bf_ftoa(&len, v, 10, digits, BF_RNDN | BF_FTOA_FORMAT_FREE_MIN);
+    if (s) {
+        sqlite3_result_text(ctx, s, (int)len, SQLITE_TRANSIENT);
+        bf_free(bfctx, s);
+    } else {
+        sqlite3_result_null(ctx);
+    }
+}
+
+/* Binary operations: add, sub, mul, div, pow */
+typedef int (*bf_binop)(bf_t *, const bf_t *, const bf_t *, limb_t, bf_flags_t);
+
+static void _sql_bf_binop(sqlite3_context *ctx, int argc, sqlite3_value **argv, bf_binop op) {
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+    bf_t a, b, r;
+    if (_bf_parse(&bfctx, &a, argv[0]) || _bf_parse(&bfctx, &b, argv[1])) {
+        sqlite3_result_null(ctx);
+        bf_context_end(&bfctx);
+        return;
+    }
+    bf_init(&bfctx, &r);
+    limb_t prec = (argc > 2) ? _get_prec(argv[2]) : QJSON_DEFAULT_PREC;
+    op(&r, &a, &b, prec, BF_RNDN);
+    _bf_result_prec(ctx, &r, &bfctx, prec);
+    bf_delete(&a); bf_delete(&b); bf_delete(&r);
+    bf_context_end(&bfctx);
+}
+
+static void sql_qjson_add(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_binop(c, n, v, bf_add); }
+static void sql_qjson_sub(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_binop(c, n, v, bf_sub); }
+static void sql_qjson_mul(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_binop(c, n, v, bf_mul); }
+static void sql_qjson_div(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_binop(c, n, v, bf_div); }
+static void sql_qjson_pow(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_binop(c, n, v, bf_pow); }
+
+/* Unary operations: neg, abs, sqrt, exp, log, sin, cos, tan, atan, asin, acos */
+typedef int (*bf_unop)(bf_t *, const bf_t *, limb_t, bf_flags_t);
+
+static void _sql_bf_unop(sqlite3_context *ctx, int argc, sqlite3_value **argv, bf_unop op) {
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+    bf_t a, r;
+    if (_bf_parse(&bfctx, &a, argv[0])) {
+        sqlite3_result_null(ctx);
+        bf_context_end(&bfctx);
+        return;
+    }
+    bf_init(&bfctx, &r);
+    limb_t prec = (argc > 1) ? _get_prec(argv[1]) : QJSON_DEFAULT_PREC;
+    op(&r, &a, prec, BF_RNDN);
+    _bf_result_prec(ctx, &r, &bfctx, prec);
+    bf_delete(&a); bf_delete(&r);
+    bf_context_end(&bfctx);
+}
+
+static void sql_qjson_sqrt(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_unop(c, n, v, bf_sqrt); }
+static void sql_qjson_exp(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_bf_unop(c, n, v, bf_exp); }
+static void sql_qjson_log(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_bf_unop(c, n, v, bf_log); }
+static void sql_qjson_sin(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_bf_unop(c, n, v, bf_sin); }
+static void sql_qjson_cos(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_bf_unop(c, n, v, bf_cos); }
+static void sql_qjson_tan(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_bf_unop(c, n, v, bf_tan); }
+static void sql_qjson_atan(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_unop(c, n, v, bf_atan); }
+static void sql_qjson_asin(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_unop(c, n, v, bf_asin); }
+static void sql_qjson_acos(sqlite3_context *c, int n, sqlite3_value **v) { _sql_bf_unop(c, n, v, bf_acos); }
+
+/* neg and abs don't use the unop template (different bf API) */
+static void sql_qjson_neg(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+    bf_t a;
+    if (_bf_parse(&bfctx, &a, argv[0])) {
+        sqlite3_result_null(ctx);
+        bf_context_end(&bfctx);
+        return;
+    }
+    bf_neg(&a);
+    /* Use enough precision to represent any input exactly */
+    limb_t p = (a.len > 0) ? a.len * LIMB_BITS : QJSON_DEFAULT_PREC;
+    _bf_result_prec(ctx, &a, &bfctx, p);
+    bf_delete(&a);
+    bf_context_end(&bfctx);
+}
+
+static void sql_qjson_abs(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+    bf_t a;
+    if (_bf_parse(&bfctx, &a, argv[0])) {
+        sqlite3_result_null(ctx);
+        bf_context_end(&bfctx);
+        return;
+    }
+    a.sign = 0;
+    limb_t p = (a.len > 0) ? a.len * LIMB_BITS : QJSON_DEFAULT_PREC;
+    _bf_result_prec(ctx, &a, &bfctx, p);
+    bf_delete(&a);
+    bf_context_end(&bfctx);
+}
+
+/* pi([prec]) */
+static void sql_qjson_pi(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+    bf_t r;
+    bf_init(&bfctx, &r);
+    limb_t prec = (argc > 0) ? _get_prec(argv[0]) : QJSON_DEFAULT_PREC;
+    bf_const_pi(&r, prec, BF_RNDN);
+    _bf_result_prec(ctx, &r, &bfctx, prec);
+    bf_delete(&r);
+    bf_context_end(&bfctx);
+}
+
+#endif /* QJSON_USE_LIBBF */
+
 /* ── Extension entry point ──────────────────────────────── */
 
 #ifdef _WIN32
@@ -934,6 +1099,27 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
 
     sqlite3_create_function(db, "qjson_reconstruct", -1,
         SQLITE_UTF8, NULL, sql_qjson_reconstruct, NULL, NULL);
+
+#ifdef QJSON_USE_LIBBF
+    /* Exact arithmetic (all take/return TEXT decimal strings) */
+    sqlite3_create_function(db, "qjson_add",  2, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_add, NULL, NULL);
+    sqlite3_create_function(db, "qjson_sub",  2, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_sub, NULL, NULL);
+    sqlite3_create_function(db, "qjson_mul",  2, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_mul, NULL, NULL);
+    sqlite3_create_function(db, "qjson_div", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_div, NULL, NULL);
+    sqlite3_create_function(db, "qjson_pow", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_pow, NULL, NULL);
+    sqlite3_create_function(db, "qjson_neg",  1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_neg, NULL, NULL);
+    sqlite3_create_function(db, "qjson_abs",  1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_abs, NULL, NULL);
+    sqlite3_create_function(db, "qjson_sqrt",-1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_sqrt, NULL, NULL);
+    sqlite3_create_function(db, "qjson_exp", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_exp, NULL, NULL);
+    sqlite3_create_function(db, "qjson_log", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_log, NULL, NULL);
+    sqlite3_create_function(db, "qjson_sin", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_sin, NULL, NULL);
+    sqlite3_create_function(db, "qjson_cos", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_cos, NULL, NULL);
+    sqlite3_create_function(db, "qjson_tan", -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_tan, NULL, NULL);
+    sqlite3_create_function(db, "qjson_atan",-1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_atan, NULL, NULL);
+    sqlite3_create_function(db, "qjson_asin",-1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_asin, NULL, NULL);
+    sqlite3_create_function(db, "qjson_acos",-1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_acos, NULL, NULL);
+    sqlite3_create_function(db, "qjson_pi",  -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_pi, NULL, NULL);
+#endif
 
     /* Register qjson_select as eponymous table-valued function */
     sqlite3_create_module(db, "qjson_select", &qs_module, NULL);
