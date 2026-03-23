@@ -167,91 +167,222 @@ class _QueryBuilder:
         return current_vid
 
 
-# ── Predicate compiler ───────────────────────────────────────
+# ── Predicate compiler with arithmetic expressions ───────────
+#
+# Grammar:
+#   predicate  = expr ('=='|'!='|'<'|'<='|'>'|'>=') expr
+#   predicates = predicate (('AND'|'OR') predicate)* | 'NOT' predicate | '(' predicates ')'
+#   expr       = term (('+' | '-') term)*
+#   term       = factor (('*' | '/') factor)*
+#   factor     = atom ('^' atom)?
+#   atom       = path | number | '(' expr ')'
 
-# Tokenize a WHERE expression
-_WHERE_RE = re.compile(r"""
-    (==|!=|<=|>=|<|>)           # comparison operators
-  | \b(AND|OR|NOT)\b           # logical operators
-  | (\(|\))                    # grouping
-  | ((?:\.[a-zA-Z_]\w*|\[\w+\]|\.\[\]|\.\.)+)  # path expression
-  | (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[NMLnml]?) # numeric literal
-  | (true|false|null)          # boolean/null literals
-  | ("(?:[^"\\]|\\.)*")        # string literal
-  | \s+                        # whitespace (skip)
+_TOKEN_RE = re.compile(r"""
+    (==|!=|<=|>=|<|>)                              # comparison
+  | (\+|-(?!\d))                                   # add/sub (minus not before digit)
+  | (\*|/)                                         # mul/div
+  | (\^)                                           # power
+  | \b(AND|OR|NOT)\b                               # logic
+  | (\(|\))                                        # parens
+  | ((?:\.[a-zA-Z_]\w*|\[\w+\]|\.\[\])+)          # path
+  | (-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?[NMLnml]?)   # number
+  | (true|false|null)                              # literal
+  | ("(?:[^"\\]|\\.)*")                            # string
+  | \s+                                            # whitespace
 """, re.VERBOSE)
 
 
-def _tokenize_where(expr):
-    """Tokenize a WHERE clause into a list of (type, value) tokens."""
+def _tokenize(expr):
     tokens = []
     pos = 0
     while pos < len(expr):
-        m = _WHERE_RE.match(expr, pos)
+        m = _TOKEN_RE.match(expr, pos)
         if not m:
-            raise ValueError("Invalid WHERE at position %d: %r" % (pos, expr[pos:]))
-        if m.group(1):
-            tokens.append(('op', m.group(1)))
-        elif m.group(2):
-            tokens.append(('logic', m.group(2)))
-        elif m.group(3):
-            tokens.append(('paren', m.group(3)))
-        elif m.group(4):
-            tokens.append(('path', m.group(4)))
-        elif m.group(5):
-            tokens.append(('number', m.group(5)))
-        elif m.group(6):
-            tokens.append(('literal', m.group(6)))
-        elif m.group(7):
-            tokens.append(('string', m.group(7)))
+            raise ValueError("Invalid at position %d: %r" % (pos, expr[pos:]))
+        if m.group(1): tokens.append(('cmp', m.group(1)))
+        elif m.group(2): tokens.append(('addsub', m.group(2)))
+        elif m.group(3): tokens.append(('muldiv', m.group(3)))
+        elif m.group(4): tokens.append(('pow', '^'))
+        elif m.group(5): tokens.append(('logic', m.group(5)))
+        elif m.group(6): tokens.append(('paren', m.group(6)))
+        elif m.group(7): tokens.append(('path', m.group(7)))
+        elif m.group(8): tokens.append(('number', m.group(8)))
+        elif m.group(9): tokens.append(('literal', m.group(9)))
+        elif m.group(10): tokens.append(('string', m.group(10)))
         pos = m.end()
     return tokens
+
+
+class _ExprCompiler:
+    """Recursive-descent compiler: expressions → SQL with qjson_* arithmetic."""
+
+    def __init__(self, tokens, builder, root_vid_expr, has_ext):
+        self.tokens = tokens
+        self.pos = 0
+        self.builder = builder
+        self.root_vid = root_vid_expr
+        self.has_ext = has_ext
+        self.params = []
+
+    def peek(self):
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return (None, None)
+
+    def eat(self, *types):
+        t, v = self.peek()
+        if t in types:
+            self.pos += 1
+            return (t, v)
+        return None
+
+    # ── Arithmetic expressions → SQL ────────────────────────
+    # Each returns a SQL expression string that evaluates to a TEXT decimal.
+    # Paths resolve to their str column (exact value) from the number table.
+    # Arithmetic wraps in qjson_add/sub/mul/div/pow calls.
+
+    def expr(self):
+        """expr = term (('+' | '-') term)*"""
+        left = self.term()
+        while True:
+            tok = self.eat('addsub')
+            if not tok:
+                break
+            right = self.term()
+            fn = 'qjson_add' if tok[1] == '+' else 'qjson_sub'
+            left = "%s(%s, %s)" % (fn, left, right)
+        return left
+
+    def term(self):
+        """term = factor (('*' | '/') factor)*"""
+        left = self.factor()
+        while True:
+            tok = self.eat('muldiv')
+            if not tok:
+                break
+            right = self.factor()
+            fn = 'qjson_mul' if tok[1] == '*' else 'qjson_div'
+            left = "%s(%s, %s)" % (fn, left, right)
+        return left
+
+    def factor(self):
+        """factor = atom ('^' atom)?"""
+        left = self.atom()
+        tok = self.eat('pow')
+        if tok:
+            right = self.atom()
+            left = "qjson_pow(%s, %s)" % (left, right)
+        return left
+
+    def atom(self):
+        """atom = path | number | '(' expr ')'"""
+        t, v = self.peek()
+        if t == 'paren' and v == '(':
+            self.pos += 1
+            result = self.expr()
+            if not self.eat('paren'):
+                raise ValueError("Expected ')'")
+            return result
+        if t == 'number':
+            self.pos += 1
+            # Strip suffix for the decimal string
+            raw = v
+            if raw and raw[-1] in 'NMLnml':
+                raw = raw[:-1]
+            return "'%s'" % raw
+        if t == 'path':
+            self.pos += 1
+            return self._resolve_path_to_str(v)
+        raise ValueError("Expected value, got %r" % (self.peek(),))
+
+    def _resolve_path_to_str(self, path_expr):
+        """Resolve a path to a SQL expression for the exact decimal value.
+        Uses COALESCE(n.str, CAST(n.lo AS TEXT)) to get the exact string."""
+        P = self.builder.P
+        t_number = self.builder._t("number")
+        path_steps = parse_path(path_expr)
+        vid_expr = self.builder.resolve_path(path_steps, self.root_vid)
+        n = self.builder._alias("ne")
+        self.builder._joins.append(
+            'JOIN %s %s ON %s.value_id = %s' % (t_number, n, n, vid_expr))
+        return "COALESCE(%s.str, CAST(%s.lo AS TEXT))" % (n, n)
+
+    # ── Predicate: expr cmp expr ────────────────────────────
+
+    def comparison(self):
+        """predicate = expr cmp expr"""
+        left_sql = self.expr()
+        tok = self.eat('cmp')
+        if not tok:
+            raise ValueError("Expected comparison operator, got %r" % (self.peek(),))
+        op = tok[1]
+        right_sql = self.expr()
+
+        # All comparisons use qjson_decimal_cmp for exact decimal semantics
+        # (text comparison fails: '7' != '7.0')
+        if op == '==':
+            return "qjson_decimal_cmp(%s, %s) = 0" % (left_sql, right_sql)
+        elif op == '!=':
+            return "qjson_decimal_cmp(%s, %s) != 0" % (left_sql, right_sql)
+        elif op == '>':
+            return "qjson_decimal_cmp(%s, %s) > 0" % (left_sql, right_sql)
+        elif op == '>=':
+            return "qjson_decimal_cmp(%s, %s) >= 0" % (left_sql, right_sql)
+        elif op == '<':
+            return "qjson_decimal_cmp(%s, %s) < 0" % (left_sql, right_sql)
+        elif op == '<=':
+            return "qjson_decimal_cmp(%s, %s) <= 0" % (left_sql, right_sql)
+
+    def predicates(self):
+        """predicates = comparison (logic comparison)* | NOT predicates | ( predicates )"""
+        parts = []
+        while self.pos < len(self.tokens):
+            t, v = self.peek()
+            if t == 'logic' and v == 'NOT':
+                self.pos += 1
+                parts.append("NOT (%s)" % self.predicates())
+            elif t == 'paren' and v == '(':
+                # Could be arithmetic grouping or predicate grouping.
+                # Look ahead: if this contains a comparison op, it's a predicate group.
+                # Otherwise it's the start of an expression (handled by comparison→expr).
+                # Try as predicate group first.
+                save = self.pos
+                self.pos += 1
+                try:
+                    inner = self.predicates()
+                    if self.eat('paren'):  # closing )
+                        parts.append("(%s)" % inner)
+                    else:
+                        raise ValueError("backtrack")
+                except:
+                    self.pos = save
+                    parts.append(self.comparison())
+            elif t in ('path', 'number', 'paren'):
+                parts.append(self.comparison())
+            else:
+                break
+
+            # Check for AND/OR
+            t2, v2 = self.peek()
+            if t2 == 'logic' and v2 in ('AND', 'OR'):
+                self.pos += 1
+                parts.append(v2)
+            else:
+                break
+
+        return ' '.join(parts)
 
 
 def compile_where(where_expr, builder, root_vid_expr="root.id", has_ext=False):
     """Compile a WHERE expression into SQL WHERE clause + params.
 
-    Returns (sql_fragment, params_list).
+    Supports arithmetic in expressions:
+      .future == .present * (1 + .rate) ^ .periods
     """
-    tokens = _tokenize_where(where_expr)
-    sql_parts = []
-    params = []
-
-    i = 0
-    while i < len(tokens):
-        tok_type, tok_val = tokens[i]
-
-        if tok_type == 'logic':
-            sql_parts.append(tok_val)
-            i += 1
-
-        elif tok_type == 'paren':
-            sql_parts.append(tok_val)
-            i += 1
-
-        elif tok_type == 'path':
-            # Next should be an operator, then a value
-            if i + 2 >= len(tokens):
-                raise ValueError("Incomplete predicate at %r" % tok_val)
-            op_type, op_val = tokens[i + 1]
-            val_type, val_val = tokens[i + 2]
-            if op_type != 'op':
-                raise ValueError("Expected operator after path, got %r" % op_val)
-
-            path_steps = parse_path(tok_val)
-            vid_expr = builder.resolve_path(path_steps, root_vid_expr)
-
-            # Project the comparison value
-            cmp_sql, cmp_params = _compile_comparison(
-                vid_expr, op_val, val_type, val_val, builder, has_ext)
-            sql_parts.append(cmp_sql)
-            params.extend(cmp_params)
-            i += 3
-
-        else:
-            raise ValueError("Unexpected token: %r" % (tokens[i],))
-
-    return ' '.join(sql_parts), params
+    tokens = _tokenize(where_expr)
+    compiler = _ExprCompiler(tokens, builder, root_vid_expr, has_ext)
+    sql = compiler.predicates()
+    return sql, compiler.params
 
 
 def _compile_comparison(vid_expr, op, val_type, val_val, builder, has_ext):
