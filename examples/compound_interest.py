@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
-"""Compound interest — exact arithmetic via QJSON constraint solver.
+"""Compound interest — exact arithmetic via embedded QJSON solver.
 
     FV = PV × (1 + r) ** n
 
 Store 3 of 4 values, leave one as ? (Unbound).
-Write the formula as constraints with AND.
-The solver fills in unknowns via leaf folding.
-
-Each unbound must be isolated in exactly one constraint.
-Decompose complex expressions into steps:
-    .opr == 1 + .rate
-    .factor == POWER(.opr, .periods)
-    .future == .present * .factor
+One SQL call solves for the unknown — any direction.
 
 Requires: make  (builds qjson_ext with libbf)
 """
@@ -21,31 +14,23 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from qjson import parse, stringify, Unbound, is_bound
 from qjson_sql import qjson_sql_adapter
-from qjson_query import qjson_solve
+from decimal import Decimal
 
-FORMULA = """
-    .opr == 1 + .rate
-    AND .factor == POWER(.opr, .periods)
-    AND .future == .present * .factor
-"""
+FORMULA = '.future == .present * POWER(1 + .rate, .periods)'
 
 
-def compound_interest(conn, db, **kwargs):
-    """Store a compound interest problem, solve, return result."""
+def solve(conn, db, **kwargs):
+    """Store a compound interest problem, solve via SQL, return result."""
     fields = ['present', 'rate', 'periods', 'future']
-    doc = {}
-    for f in fields:
-        v = kwargs.get(f)
-        doc[f] = v if v is not None else Unbound(f)
-    # Intermediates for bidirectional solving
-    doc['opr'] = Unbound('opr')
-    doc['factor'] = Unbound('factor')
+    doc = {f: kwargs.get(f, Unbound(f)) for f in fields}
 
     root = db['store'](doc)
     db['commit']()
 
-    ok = qjson_solve(conn, root, FORMULA, has_ext=True)
-    return db['load'](root), ok
+    # One SQL call — the database does the math
+    conn.execute("SELECT qjson_solve(?, ?)", (root, FORMULA))
+
+    return db['load'](root)
 
 
 def main():
@@ -57,36 +42,23 @@ def main():
     db['setup']()
 
     print("=== Compound Interest: FV = PV × (1+r)**n ===")
-    print()
-    print("Formula:")
-    print("    .opr == 1 + .rate")
-    print("    .factor == POWER(.opr, .periods)")
-    print("    .future == .present * .factor")
-    print()
+    print("Formula: %s\n" % FORMULA)
 
-    # Solve for future value
-    print("1. What will $10,000 be worth in 10 years at 5%?")
-    r, ok = compound_interest(conn, db,
-        present=parse('10000M'), rate=parse('0.05M'), periods=parse('10M'))
-    print("   FV = $%s  (solved: %s)\n" % (str(r['future'])[:10], ok))
+    print("1. $10,000 at 5%% for 10 years?")
+    r = solve(conn, db, present=Decimal('10000'), rate=Decimal('0.05'), periods=Decimal('10'))
+    print("   FV = $%s\n" % str(r['future'])[:10])
 
-    # Solve for present value
-    print("2. How much to invest now for $20,000 in 10 years at 5%?")
-    r, ok = compound_interest(conn, db,
-        future=parse('20000M'), rate=parse('0.05M'), periods=parse('10M'))
-    print("   PV = $%s  (solved: %s)\n" % (str(r['present'])[:10], ok))
+    print("2. How much to invest for $20,000 in 10 years at 5%%?")
+    r = solve(conn, db, future=Decimal('20000'), rate=Decimal('0.05'), periods=Decimal('10'))
+    print("   PV = $%s\n" % str(r['present'])[:10])
 
-    # Solve for rate
-    print("3. What rate doubles $10,000 to $20,000 in 10 years?")
-    r, ok = compound_interest(conn, db,
-        present=parse('10000M'), future=parse('20000M'), periods=parse('10M'))
-    print("   rate = %s  (solved: %s)\n" % (str(r['rate'])[:10], ok))
+    print("3. What rate doubles money in 10 years?")
+    r = solve(conn, db, present=Decimal('10000'), future=Decimal('20000'), periods=Decimal('10'))
+    print("   rate = %s%%\n" % str(float(str(r['rate'])) * 100)[:6])
 
-    # Solve for periods
-    print("4. How long to grow $10,000 to $20,000 at 7%?")
-    r, ok = compound_interest(conn, db,
-        present=parse('10000M'), future=parse('20000M'), rate=parse('0.07M'))
-    print("   periods = %s  (solved: %s)\n" % (str(r['periods'])[:10], ok))
+    print("4. How long to double at 7%%?")
+    r = solve(conn, db, present=Decimal('10000'), future=Decimal('20000'), rate=Decimal('0.07'))
+    print("   periods = %s years\n" % str(r['periods'])[:5])
 
     conn.close()
 
