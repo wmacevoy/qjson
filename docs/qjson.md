@@ -917,21 +917,47 @@ find constraints with exactly 1 unbound (leaves), solve them,
 repeat until no more progress.  Each constraint fires at most
 once.
 
-```python
-# Mortgage: P = M * r * (1+r)^n / ((1+r)^n - 1)
-constraints = [
-    ("SELECT qjson_solve_div(?, '12', ?)",  (rate_id, mr_id)),
-    ("SELECT qjson_solve_add('1', ?, ?)",   (mr_id, opr_id)),
-    ("SELECT qjson_solve_pow(?, ?, ?)",     (opr_id, months_id, factor_id)),
-    ("SELECT qjson_solve_sub(?, '1', ?)",   (factor_id, denom_id)),
-    ("SELECT qjson_solve_mul(?, ?, ?)",     (principal_id, mr_id, pr_id)),
-    ("SELECT qjson_solve_mul(?, ?, ?)",     (pr_id, factor_id, num_id)),
-    ("SELECT qjson_solve_div(?, ?, ?)",     (num_id, denom_id, payment_id)),
-]
-propagate(conn, constraints)  # solves for whichever field is ?
+### Isolation rule
+
+Each unbound value must appear in **exactly one** constraint
+for the solver to isolate it.  If a variable appears in two
+constraints, the solver sees 2+ unknowns in each and returns
+underdetermined.
+
+### Example: compound interest
+
+`FV = PV × (1 + r)^n` decomposes into 3 constraints with
+no fan-out — every variable appears exactly once:
+
+```
+.opr    == 1 + .rate         ← rate appears once
+.factor == .opr ^ .periods   ← opr, periods appear once
+.future == .present * .factor ← present, factor appear once
 ```
 
-Change which field is `?` and the same constraints solve in
-the other direction.  The solver is bidirectional — it uses
-inverse operations (subtraction for addition, logarithm for
-power, etc.) automatically.
+Store 3 of 4 user values, leave the 4th as `?`:
+
+```python
+doc = db['store']({
+    'present': parse('10000M'), 'rate': parse('0.05M'),
+    'periods': 10, 'future': Unbound('FV'),
+    'opr': Unbound('opr'), 'factor': Unbound('f'),
+})
+```
+
+The same formula solves in any direction:
+
+| Unknown | Inverse operation |
+|---------|-------------------|
+| future | `present × factor` (multiply) |
+| present | `future / factor` (divide) |
+| rate | `factor^(1/n)` then `opr - 1` (nth root) |
+| periods | `log(factor) / log(opr)` (logarithm) |
+
+The propagator chains through the constraints:
+1. `1 + .rate = .opr` → solves opr (rate is known)
+2. `.opr ^ .periods = .factor` → solves factor (opr just solved)
+3. `.present * .factor = .future` → solves future (factor just solved)
+
+Three passes, three solves, one answer.  Change which field
+is `?` and the same formula runs backward automatically.
