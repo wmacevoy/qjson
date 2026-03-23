@@ -106,7 +106,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
-  # ── C library + PG SQL + WASM ───────────────────────────
+  # ── C library + PG SQL ───────────────────────────────────
   bundles:
     runs-on: ubuntu-latest
     steps:
@@ -121,20 +121,69 @@ jobs:
             native/libbf/cutils.h native/libbf/cutils.c \
             Makefile
 
-      - name: WASM bundle
-        run: |
-          tar czf qjson-wasm.tar.gz \
-            examples/wasm/qjson-wasm.js \
-            examples/wasm/index.html \
-            examples/wasm/README.md
-
       - uses: actions/upload-artifact@v4
         with:
           name: bundles
           path: |
             qjson-c.tar.gz
-            qjson-wasm.tar.gz
             sql/qjson_pg.sql
+
+  # ── WASM: SQLCipher + QJSON extension ──────────────────
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout sqlcipher-libressl
+        uses: actions/checkout@v4
+        with:
+          repository: wmacevoy/sqlcipher-libressl
+          path: sqlcipher-libressl
+
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
+
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y tcl cmake
+
+      - name: Build LibreSSL (native + WASM)
+        run: |
+          curl -sL https://github.com/libressl/portable/releases/download/v4.2.1/libressl-4.2.1.tar.gz | tar xz
+          cd libressl-4.2.1
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/libressl \
+            -DLIBRESSL_APPS=OFF -DLIBRESSL_TESTS=OFF -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc) && make install
+          cd ..
+          mkdir -p build-wasm && cd build-wasm
+          emcmake cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/libressl-wasm \
+            -DLIBRESSL_APPS=OFF -DLIBRESSL_TESTS=OFF -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_FLAGS="-DHAVE_TIMEGM -DHAVE_GETENTROPY -D__STDC_NO_ATOMICS__"
+          emmake make -j$(nproc) crypto
+          mkdir -p $HOME/libressl-wasm/lib
+          cp crypto/libcrypto.a $HOME/libressl-wasm/lib/
+
+      - name: Build WASM
+        run: |
+          SQLCIPHER_DIR=sqlcipher-libressl \
+          LIBRESSL_NATIVE=$HOME/libressl \
+          LIBRESSL_WASM=$HOME/libressl-wasm \
+          ./wasm/build.sh sqlcipher-libressl
+
+      - name: Package
+        run: |
+          tar czf qjson-sqlcipher-wasm.tar.gz \
+            -C wasm/dist \
+            sqlcipher.js sqlcipher.wasm \
+            sqlcipher-worker.js sqlcipher-api.js \
+            qjson-wasm.js mortgage.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: qjson-sqlcipher-wasm.tar.gz
+          path: qjson-sqlcipher-wasm.tar.gz
 
   # ── Publish to PyPI ─────────────────────────────────────
   publish-pypi:
@@ -170,7 +219,7 @@ jobs:
 
   # ── GitHub Release ──────────────────────────────────────
   release:
-    needs: [sqlite-ext, python, npm, docker, bundles]
+    needs: [sqlite-ext, python, npm, docker, bundles, wasm]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4

@@ -38,7 +38,7 @@
 
 <h1>Mortgage Calculator <small>exact arithmetic</small></h1>
 <p class="subtitle">Leave one field blank to solve for it. Fill all four to verify.</p>
-<p id="mode"></p>
+<p id="mode">Loading...</p>
 
 <div class="field">
   <label>Principal ($)</label>
@@ -64,139 +64,80 @@
 <div id="result"></div>
 
 <p class="info">
-  All arithmetic runs inside the database via qjson_solve_* constraint
-  functions backed by libbf (arbitrary precision). The JavaScript is
-  just a thin form ↔ SQL bridge. No floating-point anywhere.
+  All arithmetic runs inside SQLCipher via qjson_solve_* constraint
+  functions backed by libbf (arbitrary precision). Encrypted at rest.
+  The JavaScript is just a form &harr; SQL bridge.
 </p>
 
 <!--
-  To use with SQLCipher WASM (encrypted, persistent):
-    Copy sqlcipher.js, sqlcipher.wasm, sqlcipher-worker.js, sqlcipher-api.js
-    from sqlcipher-libressl/wasm/dist/ and uncomment the SQLCipher.open block.
+  Requires qjson-sqlcipher-wasm build artifacts in the same directory:
+    sqlcipher.js, sqlcipher.wasm, sqlcipher-worker.js, sqlcipher-api.js
 
-  Standalone mode (below): uses sql.js for demo purposes.
-  The qjson_ext functions must be compiled into the WASM binary.
+  Get from: https://github.com/wmacevoy/qjson/releases
+  (qjson-sqlcipher-wasm.tar.gz)
 -->
-
-<script src="https://sql.js.org/dist/sql-wasm.js"></script>
+<script src="sqlcipher-api.js"></script>
 <script>
-var DB = null;
+var db = null;
 
 async function init() {
-  var SQL = await initSqlJs({
-    locateFile: function(file) { return "https://sql.js.org/dist/" + file; }
-  });
-  DB = new SQL.Database();
+  try {
+    db = await SQLCipher.open({ filename: "/mortgage.db", key: "demo" });
+    document.getElementById("mode").textContent =
+      "Mode: SQLCipher WASM (" + db.mode + ") — encrypted, exact arithmetic";
 
-  // In production: load qjson_ext compiled into the WASM binary.
-  // For this demo, we implement the constraint solver in SQL directly
-  // using sql.js (which doesn't support loadable extensions).
-  // The math functions are implemented as JS helper calls.
+    // Create schema for constraint solver values
+    await db.exec("CREATE TABLE IF NOT EXISTS vals " +
+      "(id INTEGER PRIMARY KEY, name TEXT, type TEXT NOT NULL, str TEXT)");
 
-  document.getElementById("solveBtn").disabled = false;
-  document.getElementById("solveBtn").textContent = "Solve";
-  document.getElementById("mode").textContent = "Mode: sql.js (demo)";
+    document.getElementById("solveBtn").disabled = false;
+    document.getElementById("solveBtn").textContent = "Solve";
+  } catch (e) {
+    document.getElementById("mode").textContent = "Error: " + e.message;
+    document.getElementById("mode").style.color = "#ff4444";
+  }
 }
 
-// ── Schema ──────────────────────────────────────────────────
-
-function setup() {
-  DB.run("CREATE TABLE IF NOT EXISTS vals (id INTEGER PRIMARY KEY, name TEXT, type TEXT, num REAL)");
-  DB.run("DELETE FROM vals");
-}
-
-function storeVal(name, value) {
+async function storeVal(name, value) {
   if (value === null) {
-    DB.run("INSERT INTO vals (name, type, num) VALUES (?, 'unbound', NULL)", [name]);
+    await db.exec("INSERT INTO vals (name, type, str) VALUES (?, 'unbound', NULL)", [name]);
   } else {
-    DB.run("INSERT INTO vals (name, type, num) VALUES (?, 'number', ?)", [name, value]);
+    await db.exec("INSERT INTO vals (name, type, str) VALUES (?, 'number', ?)", [name, value]);
   }
-  return DB.exec("SELECT last_insert_rowid()")[0].values[0][0];
+  var r = await db.select("SELECT last_insert_rowid() AS id");
+  return r[0].id;
 }
 
-function loadVal(id) {
-  var r = DB.exec("SELECT type, num FROM vals WHERE id = ?", [id]);
-  if (!r.length || !r[0].values.length) return null;
-  var row = r[0].values[0];
-  return row[0] === "unbound" ? null : row[1];
+async function loadVal(id) {
+  var r = await db.select("SELECT type, str FROM vals WHERE id = ?", [id]);
+  if (!r.length) return null;
+  return r[0].type === "unbound" ? null : r[0].str;
 }
 
-function updateVal(id, value) {
-  DB.run("UPDATE vals SET type = 'number', num = ? WHERE id = ?", [value, id]);
+// Constraint: a OP b = c
+// Args: value_id (INTEGER) or literal (TEXT string)
+// Uses qjson_solve_* SQL functions (compiled into WASM binary)
+async function solveConstraint(op, a, b, c) {
+  var sql = "SELECT qjson_solve_" + op + "(" +
+    (typeof a === "number" ? a : "'" + a + "'") + ", " +
+    (typeof b === "number" ? b : "'" + b + "'") + ", " +
+    (typeof c === "number" ? c : "'" + c + "'") + ")";
+  var r = await db.select(sql);
+  return r[0] ? Object.values(r[0])[0] : 0;
 }
 
-// ── Constraint solver (JS, calls DB for storage) ────────────
-// In production these are qjson_solve_add/sub/mul/div/pow SQL functions.
-// Here we implement the same 4-state logic in JS for the demo.
-
-function solveOp(op, aId, bId, cId, aLit, bLit, cLit) {
-  var a = (aId !== null) ? loadVal(aId) : aLit;
-  var b = (bId !== null) ? loadVal(bId) : bLit;
-  var c = (cId !== null) ? loadVal(cId) : cLit;
-
-  var nu = (a===null?1:0) + (b===null?1:0) + (c===null?1:0);
-  if (nu >= 2) return 3;
-
-  var result, target;
-  if (nu === 1) {
-    if (a === null) {
-      target = aId;
-      if (op === "add") result = c - b;
-      else if (op === "sub") result = c + b;
-      else if (op === "mul") result = c / b;
-      else if (op === "div") result = c * b;
-      else if (op === "pow") result = Math.pow(c, 1/b); // c^(1/b)
-    } else if (b === null) {
-      target = bId;
-      if (op === "add") result = c - a;
-      else if (op === "sub") result = a - c;
-      else if (op === "mul") result = c / a;
-      else if (op === "div") result = a / c;
-      else if (op === "pow") result = Math.log(c) / Math.log(a); // log_a(c)
-    } else {
-      target = cId;
-      if (op === "add") result = a + b;
-      else if (op === "sub") result = a - b;
-      else if (op === "mul") result = a * b;
-      else if (op === "div") result = a / b;
-      else if (op === "pow") result = Math.pow(a, b);
-    }
-    if (target !== null) updateVal(target, result);
-    return 1;
-  }
-
-  // All bound — consistency check
-  var expected;
-  if (op === "add") expected = a + b;
-  else if (op === "sub") expected = a - b;
-  else if (op === "mul") expected = a * b;
-  else if (op === "div") expected = a / b;
-  else if (op === "pow") expected = Math.pow(a, b);
-  return (Math.abs(expected - c) < 1e-6) ? 2 : 0;
-}
-
-function propagate(constraints) {
+async function propagate(constraints) {
   var log = [];
   var pending = constraints.slice();
   while (true) {
     var remaining = [], solved = false;
     for (var i = 0; i < pending.length; i++) {
       var c = pending[i];
-      var r = solveOp(c.op, c.aId, c.bId, c.cId, c.aLit, c.bLit, c.cLit);
-      if (r === 1) {
-        solved = true;
-        var tid = c.aId !== null && loadVal(c.aId) !== null && c._prevA === null ? c.aId
-                : c.bId !== null && loadVal(c.bId) !== null && c._prevB === null ? c.bId
-                : c.cId;
-        log.push(c.label + " → solved");
-      } else if (r === 3) {
-        remaining.push(c);
-      } else if (r === 0) {
-        log.push(c.label + " → INCONSISTENT");
-        return { ok: false, log: log, remaining: 0 };
-      } else {
-        log.push(c.label + " → consistent");
-      }
+      var r = await solveConstraint(c.op, c.a, c.b, c.c);
+      if (r === 1) { solved = true; log.push(c.label + " → solved"); }
+      else if (r === 3) { remaining.push(c); }
+      else if (r === 0) { log.push(c.label + " → INCONSISTENT"); return { ok: false, log: log }; }
+      else { log.push(c.label + " → consistent"); }
     }
     if (!solved) break;
     pending = remaining;
@@ -204,21 +145,18 @@ function propagate(constraints) {
   return { ok: pending.length === 0, log: log, remaining: pending.length };
 }
 
-// ── Solve ───────────────────────────────────────────────────
-
-function solve() {
+async function solve() {
   var el = document.getElementById("result");
-  el.innerHTML = "";
+  el.innerHTML = "Solving...";
 
   var fields = ["principal", "rate", "months", "payment"];
   for (var i = 0; i < 4; i++) document.getElementById(fields[i]).className = "";
 
-  var raw = {};
-  var blanks = [];
+  var raw = {}, blanks = [];
   for (var i = 0; i < 4; i++) {
     var v = document.getElementById(fields[i]).value.trim();
     if (v === "") { raw[fields[i]] = null; blanks.push(fields[i]); }
-    else raw[fields[i]] = parseFloat(v);
+    else raw[fields[i]] = v;
   }
 
   if (blanks.length > 1) {
@@ -229,56 +167,50 @@ function solve() {
   for (var i = 0; i < 4; i++)
     if (raw[fields[i]] === null) document.getElementById(fields[i]).className = "unbound";
 
-  // Store values (rate: convert % to decimal)
-  setup();
+  // Clear and store values (rate: convert % to decimal string)
+  await db.exec("DELETE FROM vals");
+  var rateStr = raw.rate ? String(parseFloat(raw.rate) / 100) : null;
   var ids = {
-    principal: storeVal("principal", raw.principal),
-    rate:      storeVal("rate", raw.rate !== null ? raw.rate / 100 : null),
-    months:    storeVal("months", raw.months),
-    payment:   storeVal("payment", raw.payment),
-    mr:        storeVal("mr", null),
-    opr:       storeVal("opr", null),
-    factor:    storeVal("factor", null),
-    denom:     storeVal("denom", null),
-    pr:        storeVal("pr", null),
-    num:       storeVal("num", null),
+    principal: await storeVal("principal", raw.principal),
+    rate:      await storeVal("rate", rateStr),
+    months:    await storeVal("months", raw.months),
+    payment:   await storeVal("payment", raw.payment),
+    mr:        await storeVal("mr", null),
+    opr:       await storeVal("opr", null),
+    factor:    await storeVal("factor", null),
+    denom:     await storeVal("denom", null),
+    pr:        await storeVal("pr", null),
+    num:       await storeVal("num", null),
   };
 
-  // Constraints: P = M * (r/12) * (1+r/12)^n / ((1+r/12)^n - 1)
+  // P = M * (r/12) * (1+r/12)^n / ((1+r/12)^n - 1)
   var constraints = [
-    { op:"div", aId:ids.rate, bId:null, cId:ids.mr,
-      aLit:null, bLit:12, cLit:null, label:"rate / 12 = mr" },
-    { op:"add", aId:null, bId:ids.mr, cId:ids.opr,
-      aLit:1, bLit:null, cLit:null, label:"1 + mr = opr" },
-    { op:"pow", aId:ids.opr, bId:ids.months, cId:ids.factor,
-      aLit:null, bLit:null, cLit:null, label:"opr ^ months = factor" },
-    { op:"sub", aId:ids.factor, bId:null, cId:ids.denom,
-      aLit:null, bLit:1, cLit:null, label:"factor - 1 = denom" },
-    { op:"mul", aId:ids.principal, bId:ids.mr, cId:ids.pr,
-      aLit:null, bLit:null, cLit:null, label:"principal * mr = pr" },
-    { op:"mul", aId:ids.pr, bId:ids.factor, cId:ids.num,
-      aLit:null, bLit:null, cLit:null, label:"pr * factor = num" },
-    { op:"div", aId:ids.num, bId:ids.denom, cId:ids.payment,
-      aLit:null, bLit:null, cLit:null, label:"num / denom = payment" },
+    { op: "div", a: ids.rate, b: "12", c: ids.mr, label: "rate / 12 = mr" },
+    { op: "add", a: "1", b: ids.mr, c: ids.opr, label: "1 + mr = opr" },
+    { op: "pow", a: ids.opr, b: ids.months, c: ids.factor, label: "opr ^ months = factor" },
+    { op: "sub", a: ids.factor, b: "1", c: ids.denom, label: "factor - 1 = denom" },
+    { op: "mul", a: ids.principal, b: ids.mr, c: ids.pr, label: "principal * mr = pr" },
+    { op: "mul", a: ids.pr, b: ids.factor, c: ids.num, label: "pr * factor = num" },
+    { op: "div", a: ids.num, b: ids.denom, c: ids.payment, label: "num / denom = payment" },
   ];
 
-  var result = propagate(constraints);
+  var result = await propagate(constraints);
 
-  // Display
   var out = "";
   if (blanks.length === 0) {
     out += result.ok
       ? '<span class="ok">CONSISTENT</span>\n'
       : '<span class="err">INCONSISTENT</span>\n';
+    for (var i = 0; i < 4; i++)
+      document.getElementById(fields[i]).className = result.ok ? "solved" : "error";
   } else {
     var target = blanks[0];
-    var val = loadVal(ids[target]);
+    var val = await loadVal(ids[target]);
     if (val !== null) {
       var display;
-      if (target === "rate") display = (val * 100).toFixed(6);
-      else if (target === "months") display = Math.round(val).toString();
-      else display = val.toFixed(2);
-
+      if (target === "rate") display = (parseFloat(val) * 100).toFixed(6);
+      else if (target === "months") display = Math.round(parseFloat(val)).toString();
+      else display = parseFloat(val).toFixed(2);
       document.getElementById(target).value = display;
       document.getElementById(target).className = "solved";
       out += '<span class="ok">SOLVED</span>\n';
@@ -288,26 +220,13 @@ function solve() {
     }
   }
 
-  out += "Constraint propagation:\n";
+  out += "Constraint propagation (SQL):\n";
   for (var i = 0; i < result.log.length; i++)
     out += "  " + result.log[i] + "\n";
   if (result.remaining > 0)
-    out += "  (" + result.remaining + " constraints still pending)\n";
-
-  // Show intermediates
-  out += "\nIntermediate values:\n";
-  var imm = ["mr", "opr", "factor", "denom", "pr", "num"];
-  for (var i = 0; i < imm.length; i++) {
-    var v = loadVal(ids[imm[i]]);
-    out += "  " + imm[i] + " = " + (v !== null ? v.toPrecision(12) : "?") + "\n";
-  }
+    out += "  (" + result.remaining + " pending)\n";
 
   el.innerHTML = out;
-
-  for (var i = 0; i < 4; i++) {
-    var inp = document.getElementById(fields[i]);
-    if (inp.className === "" && result.ok) inp.className = "solved";
-  }
 }
 
 init();
