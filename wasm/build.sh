@@ -20,7 +20,7 @@ set -e
 #   wasm/dist/mortgage.html
 
 QJSON_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SQLCIPHER_DIR="${1:-$QJSON_DIR/../sqlcipher-libressl}"
+SQLCIPHER_DIR="$(cd "${1:-$QJSON_DIR/../sqlcipher-libressl}" && pwd)"
 LIBRESSL_NATIVE="${LIBRESSL_NATIVE:-$HOME/libressl}"
 LIBRESSL_WASM="${LIBRESSL_WASM:-$HOME/libressl-wasm}"
 
@@ -39,6 +39,7 @@ if [ ! -f "$SQLCIPHER_DIR/sqlite3.c" ]; then
                 -I$LIBRESSL_NATIVE/include" \
         LDFLAGS="$LIBRESSL_NATIVE/lib/libcrypto.a"
     make sqlite3.c
+    cd "$QJSON_DIR"
 fi
 
 # Prepare dist
