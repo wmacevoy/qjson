@@ -178,7 +178,7 @@ jobs:
             -C wasm/dist \
             sqlcipher.js sqlcipher.wasm \
             sqlcipher-worker.js sqlcipher-api.js \
-            qjson-wasm.js mortgage.html
+            qjson-wasm.js
 
       - uses: actions/upload-artifact@v4
         with:

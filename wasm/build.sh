@@ -98,7 +98,6 @@ rm -f sqlite3.c sqlite3.h sqlcipher_wasm.c opfs_vfs.c \
 cp "$SQLCIPHER_DIR/wasm/sqlcipher-worker.js" .
 cp "$SQLCIPHER_DIR/wasm/sqlcipher-api.js" .
 cp "$QJSON_DIR/examples/wasm/qjson-wasm.js" .
-cp "$QJSON_DIR/examples/wasm/mortgage.html" .
 
 ls -lh sqlcipher.js sqlcipher.wasm
 echo "Done. Output in wasm/dist/"
