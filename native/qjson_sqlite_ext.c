@@ -1086,9 +1086,10 @@ static void sql_qjson_pi(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
  *   TEXT    → literal decimal string (rvalue, always bound)
  *
  * Returns:
- *   0 unbound: 1 if constraint holds, 0 if not (consistency check)
- *   1 unbound: solves for it, UPDATEs the row, returns 1
- *   2+ unbound: returns 1 (underdetermined)
+ *   0 = inconsistent (all bound, a OP b ≠ c)
+ *   1 = solved (updated one unbound value)
+ *   2 = consistent (all bound, a OP b = c)
+ *   3 = underdetermined (2+ unbound, skipped)
  */
 
 typedef struct {
@@ -1202,8 +1203,8 @@ static void _sql_solve(sqlite3_context *ctx, int argc, sqlite3_value **argv, int
     int n_unbound = args[0].is_unbound + args[1].is_unbound + args[2].is_unbound;
 
     if (n_unbound >= 2) {
-        /* Underdetermined — return true */
-        sqlite3_result_int(ctx, 1);
+        /* Underdetermined — skip */
+        sqlite3_result_int(ctx, 3);
     } else if (n_unbound == 1) {
         /* Solve for the one unbound */
         int target = args[0].is_unbound ? 0 : args[1].is_unbound ? 1 : 2;
@@ -1259,9 +1260,9 @@ static void _sql_solve(sqlite3_context *ctx, int argc, sqlite3_value **argv, int
         else if (op == SOLVE_DIV) bf_div(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
         else if (op == SOLVE_POW) bf_pow(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
 
-        int eq = (bf_cmp(&expected, &args[2].val) == 0) ? 1 : 0;
+        int eq = (bf_cmp(&expected, &args[2].val) == 0) ? 2 : 0;
         bf_delete(&expected);
-        sqlite3_result_int(ctx, eq);
+        sqlite3_result_int(ctx, eq);  /* 2=consistent, 0=inconsistent */
     }
 
     _solve_arg_free(&args[0]);
