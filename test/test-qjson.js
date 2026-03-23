@@ -318,7 +318,7 @@ test("Unbound parse bare", function() {
 test("Unbound parse anonymous", function() {
   var v = qjson_parse("?");
   eq(v.$qjson, "unbound");
-  eq(v.name, "_");
+  eq(v.name, "");
 });
 
 test("Unbound parse underscore", function() {
