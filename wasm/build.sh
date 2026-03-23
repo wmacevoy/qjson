@@ -17,7 +17,7 @@ set -e
 #   wasm/dist/sqlcipher-worker.js
 #   wasm/dist/sqlcipher-api.js
 #   wasm/dist/qjson-wasm.js
-#   wasm/dist/mortgage.html
+#   wasm/dist/qjson-wasm.js
 
 QJSON_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SQLCIPHER_DIR="$(cd "${1:-$QJSON_DIR/../sqlcipher-libressl}" && pwd)"

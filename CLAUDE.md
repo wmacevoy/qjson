@@ -32,7 +32,7 @@ python3 test/test_qjson_sql.py --postgres
 docker compose down
 
 # Mortgage calculator example
-python3 examples/mortgage.py
+python3 examples/compound_interest.py
 
 # PostgreSQL functions install
 psql -h localhost -p 5433 -U qjson -d qjson_test -f sql/qjson_pg.sql
