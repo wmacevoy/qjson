@@ -217,8 +217,176 @@ def _tokenize(expr):
     return tokens
 
 
+# ── AST for expression trees ─────────────────────────────────
+
+class _Lit:
+    """Literal number."""
+    __slots__ = ('val',)
+    def __init__(self, val): self.val = val
+    def to_sql(self, b): return "'%s'" % self.val
+    def find_unbound(self, checker): return None
+
+class _Path:
+    """Path reference to a stored value."""
+    __slots__ = ('path',)
+    def __init__(self, path): self.path = path
+    def to_sql(self, b):
+        steps = parse_path(self.path)
+        vid = b.resolve_path(steps, "root.id")
+        n = b._alias("ne")
+        b._joins.append('JOIN %s %s ON %s.value_id = %s' % (b._t("number"), n, n, vid))
+        return "COALESCE(%s.str, CAST(%s.lo AS TEXT))" % (n, n)
+    def find_unbound(self, checker):
+        if checker(self.path):
+            return self
+        return None
+
+class _BinOp:
+    """Binary operation: left OP right."""
+    __slots__ = ('op', 'left', 'right', 'fn')
+    _FN = {'+': 'qjson_add', '-': 'qjson_sub', '*': 'qjson_mul',
+           '/': 'qjson_div', '**': 'qjson_pow'}
+    def __init__(self, op, left, right):
+        self.op = op; self.left = left; self.right = right
+        self.fn = self._FN[op]
+    def to_sql(self, b):
+        return "%s(%s, %s)" % (self.fn, self.left.to_sql(b), self.right.to_sql(b))
+    def find_unbound(self, checker):
+        return self.left.find_unbound(checker) or self.right.find_unbound(checker)
+
+class _Func:
+    """Function call: fn(args)."""
+    __slots__ = ('name', 'args', 'sql_fn')
+    _FN = {'POWER': 'qjson_pow', 'SQRT': 'qjson_sqrt', 'EXP': 'qjson_exp',
+           'LOG': 'qjson_log', 'SIN': 'qjson_sin', 'COS': 'qjson_cos',
+           'TAN': 'qjson_tan', 'ATAN': 'qjson_atan', 'ASIN': 'qjson_asin',
+           'ACOS': 'qjson_acos', 'PI': 'qjson_pi'}
+    def __init__(self, name, args):
+        self.name = name; self.args = args; self.sql_fn = self._FN[name]
+    def to_sql(self, b):
+        return "%s(%s)" % (self.sql_fn, ', '.join(a.to_sql(b) for a in self.args))
+    def find_unbound(self, checker):
+        for a in self.args:
+            r = a.find_unbound(checker)
+            if r: return r
+        return None
+
+
+def _decompose_to_constraints(lhs_node, rhs_node, conn, root_id, prefix, dialect):
+    """Decompose LHS == RHS into 3-term qjson_solve_* constraints.
+
+    Walks the expression tree, creates anonymous unbound value_ids for
+    intermediate nodes, and returns a list of (sql, params) constraints
+    ready for leaf-folding propagation.
+    """
+    from qjson_sql import qjson_sql_adapter
+    from qjson import Unbound
+    from qjson_query import qjson_select
+
+    P = '?' if dialect == 'sqlite' else '%s'
+
+    def _exec(sql, params=None):
+        if dialect == 'postgres':
+            cur = conn.cursor()
+            cur.execute(sql, params or ())
+            return cur
+        return conn.execute(sql, params or ())
+
+    # Get adapter for storing temporaries
+    adapter = qjson_sql_adapter.__wrapped__ if hasattr(qjson_sql_adapter, '__wrapped__') else None
+
+    def _store_temp():
+        """Create an anonymous unbound temporary value."""
+        _exec('INSERT INTO "%svalue" (type) VALUES (%s)' % (prefix, P), ('unbound',))
+        if dialect == 'postgres':
+            cur = conn.cursor()
+            cur.execute("SELECT lastval()")
+            vid = cur.fetchone()[0]
+        else:
+            vid = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        _exec('INSERT INTO "%snumber" (value_id, lo, str, hi) VALUES (%s,%s,%s,%s)' % (
+            prefix, P, P, P, P), (vid, float('-inf'), '?', float('inf')))
+        return vid
+
+    def _resolve_path_vid(path_expr):
+        """Get the value_id for a path."""
+        results = qjson_select(conn, root_id, path_expr, prefix=prefix, dialect=dialect, has_ext=True)
+        return results[0][0] if results else None
+
+    def _node_to_vid(node):
+        """Convert an AST node to a value_id. Literals get stored, paths get resolved,
+        compound nodes get decomposed into constraints + temporary vid."""
+        if isinstance(node, _Lit):
+            # Store as a number value
+            from qjson_sql import round_down, round_up
+            lo = round_down(node.val)
+            hi = round_up(node.val)
+            s = None if lo == hi else node.val
+            _exec('INSERT INTO "%svalue" (type) VALUES (%s)' % (prefix, P), ('number',))
+            vid = conn.execute("SELECT last_insert_rowid()").fetchone()[0] if dialect == 'sqlite' else None
+            if dialect == 'postgres':
+                cur = conn.cursor(); cur.execute("SELECT lastval()"); vid = cur.fetchone()[0]
+            _exec('INSERT INTO "%snumber" (value_id, lo, str, hi) VALUES (%s,%s,%s,%s)' % (
+                prefix, P, P, P, P), (vid, lo, s, hi))
+            return vid
+
+        if isinstance(node, _Path):
+            return _resolve_path_vid(node.path)
+
+        if isinstance(node, _BinOp):
+            left_vid = _node_to_vid(node.left)
+            right_vid = _node_to_vid(node.right)
+            result_vid = _store_temp()
+            op_map = {'+': 'add', '-': 'sub', '*': 'mul', '/': 'div', '**': 'pow'}
+            fn = 'qjson_solve_' + op_map[node.op]
+            constraints.append(("SELECT %s(%s, %s, %s)" % (fn, P, P, P),
+                               (left_vid, right_vid, result_vid)))
+            return result_vid
+
+        if isinstance(node, _Func):
+            if node.name == 'POWER' and len(node.args) == 2:
+                base_vid = _node_to_vid(node.args[0])
+                exp_vid = _node_to_vid(node.args[1])
+                result_vid = _store_temp()
+                constraints.append(("SELECT qjson_solve_pow(%s, %s, %s)" % (P, P, P),
+                                   (base_vid, exp_vid, result_vid)))
+                return result_vid
+            # For single-arg functions, use the 2-arg solve form:
+            # qjson_solve_exp(a, b) means exp(a) = b
+            # These aren't implemented yet as solve functions, so fall back
+            # to evaluating directly (forward only for now)
+            arg_vid = _node_to_vid(node.args[0]) if node.args else None
+            result_vid = _store_temp()
+            # TODO: qjson_solve_sin, qjson_solve_exp, etc.
+            # For now, store as a forward-only computation constraint
+            constraints.append(("SELECT qjson_solve_pow(%s, '1', %s)" % (P, P),
+                               (arg_vid, result_vid)))  # placeholder
+            return result_vid
+
+        raise ValueError("Cannot decompose: %r" % node)
+
+    constraints = []
+    lhs_vid = _node_to_vid(lhs_node)
+    rhs_vid = _node_to_vid(rhs_node)
+
+    # The top-level constraint: LHS == RHS (as an add with 0: lhs + 0 = rhs? No...)
+    # Actually: qjson_solve_add(lhs, '0', rhs) means lhs + 0 = rhs, i.e. lhs = rhs
+    # Or simpler: just record that lhs_vid and rhs_vid must be equal.
+    # Use solve_add(lhs, literal_0, rhs) as identity constraint.
+    _exec('INSERT INTO "%svalue" (type) VALUES (%s)' % (prefix, P), ('number',))
+    zero_vid = conn.execute("SELECT last_insert_rowid()").fetchone()[0] if dialect == 'sqlite' else None
+    if dialect == 'postgres':
+        cur = conn.cursor(); cur.execute("SELECT lastval()"); zero_vid = cur.fetchone()[0]
+    _exec('INSERT INTO "%snumber" (value_id, lo, str, hi) VALUES (%s,%s,%s,%s)' % (
+        prefix, P, P, P, P), (zero_vid, 0.0, None, 0.0))
+    constraints.append(("SELECT qjson_solve_add(%s, %s, %s)" % (P, P, P),
+                        (lhs_vid, zero_vid, rhs_vid)))
+
+    return constraints
+
+
 class _ExprCompiler:
-    """Recursive-descent compiler: expressions → SQL with qjson_* arithmetic."""
+    """Recursive-descent compiler: expressions → AST and SQL."""
 
     def __init__(self, tokens, builder, root_vid_expr, has_ext):
         self.tokens = tokens
@@ -240,10 +408,62 @@ class _ExprCompiler:
             return (t, v)
         return None
 
-    # ── Arithmetic expressions → SQL ────────────────────────
+    # ── AST builders (return _Lit/_Path/_BinOp/_Func nodes) ──
+
+    def ast_expr(self):
+        left = self.ast_term()
+        while True:
+            tok = self.eat('addsub')
+            if not tok: break
+            left = _BinOp(tok[1], left, self.ast_term())
+        return left
+
+    def ast_term(self):
+        left = self.ast_factor()
+        while True:
+            tok = self.eat('muldiv')
+            if not tok: break
+            left = _BinOp(tok[1], left, self.ast_factor())
+        return left
+
+    def ast_factor(self):
+        left = self.ast_atom()
+        tok = self.eat('pow')
+        if tok:
+            left = _BinOp('**', left, self.ast_atom())
+        return left
+
+    def ast_atom(self):
+        t, v = self.peek()
+        if t == 'func':
+            self.pos += 1
+            fn_name = v.upper()
+            if not self.eat('paren'): raise ValueError("Expected '(' after %s" % fn_name)
+            args = []
+            if fn_name != 'PI':
+                args.append(self.ast_expr())
+                while self.eat('comma'): args.append(self.ast_expr())
+            if not self.eat('paren'): raise ValueError("Expected ')'")
+            if fn_name == 'POWER' and len(args) == 2:
+                return _BinOp('**', args[0], args[1])
+            return _Func(fn_name, args)
+        if t == 'paren' and v == '(':
+            self.pos += 1
+            r = self.ast_expr()
+            if not self.eat('paren'): raise ValueError("Expected ')'")
+            return r
+        if t == 'number':
+            self.pos += 1
+            raw = v
+            if raw and raw[-1] in 'NMLnml': raw = raw[:-1]
+            return _Lit(raw)
+        if t == 'path':
+            self.pos += 1
+            return _Path(v)
+        raise ValueError("Expected value, got %r" % (self.peek(),))
+
+    # ── SQL builders (return SQL strings) ────────────────────
     # Each returns a SQL expression string that evaluates to a TEXT decimal.
-    # Paths resolve to their str column (exact value) from the number table.
-    # Arithmetic wraps in qjson_add/sub/mul/div/pow calls.
 
     def expr(self):
         """expr = term (('+' | '-') term)*"""
@@ -624,6 +844,65 @@ def qjson_select(conn, root_id, select_path, where_expr=None,
         results.append((vid, bindings))
 
     return results
+
+
+def qjson_solve(conn, root_id, constraint_expr,
+                prefix="qjson_", dialect=None, has_ext=True):
+    """Solve constraints by decomposing into 3-term qjson_solve_* calls.
+
+    constraint_expr — equality constraints joined by AND:
+        '.future == .present * POWER(1 + .rate, .periods)'
+
+    The expression tree is decomposed into 3-term constraints with
+    anonymous temporaries. qjson_solve_add/sub/mul/div/pow handle
+    inversion automatically. Leaf-folding propagation runs until
+    no more progress.
+
+    Returns True if fully determined, False otherwise.
+    """
+    if dialect is None:
+        dialect = 'sqlite'
+    P = '?' if dialect == 'sqlite' else '%s'
+
+    # Parse each LHS == RHS constraint into AST pairs
+    parts = [c.strip() for c in re.split(r'\bAND\b', constraint_expr)]
+    all_constraints = []
+
+    for part in parts:
+        if '==' not in part:
+            raise ValueError("Constraint must use ==: %r" % part)
+        lhs_str, rhs_str = part.split('==', 1)
+
+        # Parse both sides to AST
+        tokens_l = _tokenize(lhs_str.strip())
+        comp_l = _ExprCompiler(tokens_l, None, None, has_ext)
+        lhs_ast = comp_l.ast_expr()
+
+        tokens_r = _tokenize(rhs_str.strip())
+        comp_r = _ExprCompiler(tokens_r, None, None, has_ext)
+        rhs_ast = comp_r.ast_expr()
+
+        # Decompose into 3-term constraints
+        new_constraints = _decompose_to_constraints(
+            lhs_ast, rhs_ast, conn, root_id, prefix, dialect)
+        all_constraints.extend(new_constraints)
+
+    # Leaf-folding propagation using qjson_solve_*
+    pending = list(all_constraints)
+    while True:
+        remaining = []
+        solved_any = False
+        for sql, params in pending:
+            r = conn.execute(sql, params).fetchone()[0]
+            if r == 1:    solved_any = True  # solved one
+            elif r == 3:  remaining.append((sql, params))  # underdetermined
+            elif r == 0:  return False  # inconsistent
+            # r == 2: consistent, done
+        if not solved_any:
+            break
+        pending = remaining
+
+    return len(pending) == 0
 
 
 def qjson_update(conn, root_id, update_path, value, where_expr=None,

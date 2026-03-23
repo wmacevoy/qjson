@@ -17,6 +17,8 @@ as `?` (unbound).  The constraint solver fills it in.
 ```python
 from qjson import parse, Unbound, is_bound
 from qjson.sql import adapter
+from qjson.query import select
+from decimal import Decimal
 import sqlite3
 
 conn = sqlite3.connect(':memory:')
@@ -26,40 +28,29 @@ conn.load_extension('./qjson_ext')
 db = adapter(conn)
 db['setup']()
 
-# All fields start unbound
-doc = db['store']({
-    'present': Unbound('PV'), 'rate': Unbound('r'),
-    'periods': Unbound('n'),  'future': Unbound('FV'),
-    'opr': Unbound('opr'),    'factor': Unbound('f'),
+# Store with one unknown
+root = db['store']({
+    'present': Decimal('10000'), 'rate': Decimal('0.05'),
+    'periods': 10, 'future': Unbound('FV'),
 })
+db['commit']()
 
-# User fills in 3 of 4
-qjson_update(doc, '.present == 10000')
-qjson_update(doc, '.rate == 0.05')
-qjson_update(doc, '.periods == 10')
-
-# Formula — same every time, works in any direction
-qjson_update(doc, """
-    .opr == 1 + .rate
-    AND .factor == .opr ^ .periods
-    AND .future == .present * .factor
-""")
-
-if is_bound(db['load'](doc)):
-    print(db['load'](doc)['future'])  # → 16288.9462...
+# Query with arithmetic in WHERE
+results = select(conn, root, '.present',
+    where_expr='.present * POWER(1 + .rate, .periods) > 16000',
+    has_ext=True)
+# → returns row (10000 * 1.05^10 = 16288.95 > 16000)
 ```
 
-Each unbound value must appear in exactly one constraint
-for the solver to isolate it.  The three constraints above
-have no fan-out — every variable appears once — so any
-single unknown can be solved:
+Arithmetic in WHERE expressions:
+```
+.future == .present * (1 + .rate) ** .periods
+.circumference == 2 * PI() * .radius
+SQRT(.area) > 10
+```
 
-| Unknown | Inverse operation |
-|---------|-------------------|
-| future | `present × factor` |
-| present | `future / factor` |
-| rate | `factor^(1/n)` then `opr - 1` (nth root) |
-| periods | `log(factor) / log(opr)` (logarithm) |
+Functions: `POWER`, `SQRT`, `EXP`, `LOG`, `SIN`, `COS`, `TAN`,
+`ATAN`, `ASIN`, `ACOS`, `PI`. All exact via libbf.
 
 ## What QJSON adds to JSON
 

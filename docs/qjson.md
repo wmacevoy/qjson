@@ -931,7 +931,7 @@ no fan-out — every variable appears exactly once:
 
 ```
 .opr    == 1 + .rate         ← rate appears once
-.factor == .opr ^ .periods   ← opr, periods appear once
+.factor == .opr ** .periods   ← opr, periods appear once
 .future == .present * .factor ← present, factor appear once
 ```
 
