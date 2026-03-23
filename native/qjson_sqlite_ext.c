@@ -1073,6 +1073,209 @@ static void sql_qjson_pi(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     bf_context_end(&bfctx);
 }
 
+/* ── Constraint-solving arithmetic ───────────────────────── */
+/*
+ * qjson_solve_add(a, b, c [, prefix])  — constraint: a + b = c
+ * qjson_solve_sub(a, b, c [, prefix])  — constraint: a - b = c
+ * qjson_solve_mul(a, b, c [, prefix])  — constraint: a * b = c
+ * qjson_solve_div(a, b, c [, prefix])  — constraint: a / b = c
+ * qjson_solve_pow(a, b, c [, prefix])  — constraint: a ^ b = c
+ *
+ * Each argument is either:
+ *   INTEGER → value_id (lvalue, loaded from DB, can be solved if unbound)
+ *   TEXT    → literal decimal string (rvalue, always bound)
+ *
+ * Returns:
+ *   0 unbound: 1 if constraint holds, 0 if not (consistency check)
+ *   1 unbound: solves for it, UPDATEs the row, returns 1
+ *   2+ unbound: returns 1 (underdetermined)
+ */
+
+typedef struct {
+    int is_id;          /* 1 if value_id, 0 if literal */
+    sqlite3_int64 vid;  /* value_id (if is_id) */
+    int is_unbound;
+    bf_t val;           /* parsed value (if bound) */
+    int has_val;
+} solve_arg;
+
+static void _solve_arg_load(solve_arg *sa, sqlite3_value *arg, sqlite3 *db,
+                             const char *prefix, bf_context_t *bfctx) {
+    memset(sa, 0, sizeof(*sa));
+    if (sqlite3_value_type(arg) == SQLITE_INTEGER) {
+        sa->is_id = 1;
+        sa->vid = sqlite3_value_int64(arg);
+        /* Load type and value from DB */
+        char *sql = sqlite3_mprintf("SELECT v.type, n.lo, n.str, n.hi "
+            "FROM \"%svalue\" v LEFT JOIN \"%snumber\" n ON n.value_id = v.id "
+            "WHERE v.id = %lld", prefix, prefix, sa->vid);
+        sqlite3_stmt *stmt = NULL;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
+            sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *type = (const char *)sqlite3_column_text(stmt, 0);
+            if (type && strcmp(type, "unbound") == 0) {
+                sa->is_unbound = 1;
+            } else {
+                const char *str = (const char *)sqlite3_column_text(stmt, 2);
+                double lo = sqlite3_column_double(stmt, 1);
+                bf_init(bfctx, &sa->val);
+                if (str) {
+                    bf_atof(&sa->val, str, NULL, 10, BF_PREC_INF, BF_RNDN);
+                } else {
+                    bf_set_float64(&sa->val, lo);
+                }
+                sa->has_val = 1;
+            }
+        }
+        if (stmt) sqlite3_finalize(stmt);
+        sqlite3_free(sql);
+    } else {
+        /* TEXT literal */
+        sa->is_id = 0;
+        const char *s = (const char *)sqlite3_value_text(arg);
+        if (s) {
+            bf_init(bfctx, &sa->val);
+            bf_atof(&sa->val, s, NULL, 10, BF_PREC_INF, BF_RNDN);
+            sa->has_val = 1;
+        }
+    }
+}
+
+static void _solve_arg_free(solve_arg *sa) {
+    if (sa->has_val) bf_delete(&sa->val);
+}
+
+/* Update an unbound value_id to a solved result */
+static void _solve_update(sqlite3 *db, const char *prefix, sqlite3_int64 vid,
+                           bf_t *result, bf_context_t *bfctx) {
+    /* Format result as decimal string */
+    size_t len;
+    char *str = bf_ftoa(&len, result, 10, 36, BF_RNDN | BF_FTOA_FORMAT_FREE_MIN);
+    if (!str) return;
+
+    /* Project to [lo, str, hi] interval */
+    double lo, hi;
+    qjson_project(str, (int)len, &lo, &hi);
+    const char *proj_str = (lo == hi) ? NULL : str;
+
+    /* Update type from 'unbound' to 'number' */
+    char *sql = sqlite3_mprintf("UPDATE \"%svalue\" SET type = 'number' WHERE id = %lld",
+                                 prefix, vid);
+    sqlite3_exec(db, sql, NULL, NULL, NULL);
+    sqlite3_free(sql);
+
+    /* Delete old unbound projection, insert new number projection */
+    sql = sqlite3_mprintf("DELETE FROM \"%snumber\" WHERE value_id = %lld", prefix, vid);
+    sqlite3_exec(db, sql, NULL, NULL, NULL);
+    sqlite3_free(sql);
+
+    sql = sqlite3_mprintf("INSERT INTO \"%snumber\" (value_id, lo, str, hi) VALUES (%lld, %f, %Q, %f)",
+                           prefix, vid, lo, proj_str, hi);
+    sqlite3_exec(db, sql, NULL, NULL, NULL);
+    sqlite3_free(sql);
+
+    bf_free(bfctx, str);
+}
+
+/* Inverse operations for solving */
+/* add: a+b=c → a=c-b, b=c-a */
+/* sub: a-b=c → a=c+b, b=a-c */
+/* mul: a*b=c → a=c/b, b=c/a */
+/* div: a/b=c → a=c*b, b=a/c */
+/* pow: a^b=c → a=c^(1/b), b=log(c)/log(a) */
+
+enum { SOLVE_ADD, SOLVE_SUB, SOLVE_MUL, SOLVE_DIV, SOLVE_POW };
+
+static void _sql_solve(sqlite3_context *ctx, int argc, sqlite3_value **argv, int op) {
+    sqlite3 *db = sqlite3_context_db_handle(ctx);
+    const char *prefix = (argc > 3 && sqlite3_value_type(argv[3]) == SQLITE_TEXT)
+        ? (const char *)sqlite3_value_text(argv[3]) : "qjson_";
+
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+
+    solve_arg args[3];
+    _solve_arg_load(&args[0], argv[0], db, prefix, &bfctx);
+    _solve_arg_load(&args[1], argv[1], db, prefix, &bfctx);
+    _solve_arg_load(&args[2], argv[2], db, prefix, &bfctx);
+
+    int n_unbound = args[0].is_unbound + args[1].is_unbound + args[2].is_unbound;
+
+    if (n_unbound >= 2) {
+        /* Underdetermined — return true */
+        sqlite3_result_int(ctx, 1);
+    } else if (n_unbound == 1) {
+        /* Solve for the one unbound */
+        int target = args[0].is_unbound ? 0 : args[1].is_unbound ? 1 : 2;
+        bf_t result;
+        bf_init(&bfctx, &result);
+
+        if (op == SOLVE_ADD) {
+            if (target == 0) bf_sub(&result, &args[2].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else if (target == 1) bf_sub(&result, &args[2].val, &args[0].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else bf_add(&result, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        } else if (op == SOLVE_SUB) {
+            if (target == 0) bf_add(&result, &args[2].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else if (target == 1) bf_sub(&result, &args[0].val, &args[2].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else bf_sub(&result, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        } else if (op == SOLVE_MUL) {
+            if (target == 0) bf_div(&result, &args[2].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else if (target == 1) bf_div(&result, &args[2].val, &args[0].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else bf_mul(&result, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        } else if (op == SOLVE_DIV) {
+            if (target == 0) bf_mul(&result, &args[2].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else if (target == 1) bf_div(&result, &args[0].val, &args[2].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            else bf_div(&result, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        } else if (op == SOLVE_POW) {
+            if (target == 2) {
+                bf_pow(&result, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            } else if (target == 0) {
+                /* a = c^(1/b) */
+                bf_t inv; bf_init(&bfctx, &inv);
+                bf_t one; bf_init(&bfctx, &one); bf_set_ui(&one, 1);
+                bf_div(&inv, &one, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+                bf_pow(&result, &args[2].val, &inv, QJSON_DEFAULT_PREC, BF_RNDN);
+                bf_delete(&inv); bf_delete(&one);
+            } else {
+                /* b = log(c)/log(a) */
+                bf_t lc, la; bf_init(&bfctx, &lc); bf_init(&bfctx, &la);
+                bf_log(&lc, &args[2].val, QJSON_DEFAULT_PREC, BF_RNDN);
+                bf_log(&la, &args[0].val, QJSON_DEFAULT_PREC, BF_RNDN);
+                bf_div(&result, &lc, &la, QJSON_DEFAULT_PREC, BF_RNDN);
+                bf_delete(&lc); bf_delete(&la);
+            }
+        }
+
+        _solve_update(db, prefix, args[target].vid, &result, &bfctx);
+        bf_delete(&result);
+        sqlite3_result_int(ctx, 1);
+    } else {
+        /* All bound — consistency check */
+        bf_t expected;
+        bf_init(&bfctx, &expected);
+        if (op == SOLVE_ADD) bf_add(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        else if (op == SOLVE_SUB) bf_sub(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        else if (op == SOLVE_MUL) bf_mul(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        else if (op == SOLVE_DIV) bf_div(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+        else if (op == SOLVE_POW) bf_pow(&expected, &args[0].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+
+        int eq = (bf_cmp(&expected, &args[2].val) == 0) ? 1 : 0;
+        bf_delete(&expected);
+        sqlite3_result_int(ctx, eq);
+    }
+
+    _solve_arg_free(&args[0]);
+    _solve_arg_free(&args[1]);
+    _solve_arg_free(&args[2]);
+    bf_context_end(&bfctx);
+}
+
+static void sql_solve_add(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_ADD); }
+static void sql_solve_sub(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_SUB); }
+static void sql_solve_mul(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_MUL); }
+static void sql_solve_div(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_DIV); }
+static void sql_solve_pow(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_POW); }
+
 #endif /* QJSON_USE_LIBBF */
 
 /* ── Extension entry point ──────────────────────────────── */
@@ -1119,6 +1322,13 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
     sqlite3_create_function(db, "qjson_asin",-1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_asin, NULL, NULL);
     sqlite3_create_function(db, "qjson_acos",-1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_acos, NULL, NULL);
     sqlite3_create_function(db, "qjson_pi",  -1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_pi, NULL, NULL);
+
+    /* Constraint-solving: qjson_solve_XX(a, b, c [, prefix]) → 0/1 */
+    sqlite3_create_function(db, "qjson_solve_add", -1, SQLITE_UTF8, NULL, sql_solve_add, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_sub", -1, SQLITE_UTF8, NULL, sql_solve_sub, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_mul", -1, SQLITE_UTF8, NULL, sql_solve_mul, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_div", -1, SQLITE_UTF8, NULL, sql_solve_div, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_pow", -1, SQLITE_UTF8, NULL, sql_solve_pow, NULL, NULL);
 #endif
 
     /* Register qjson_select as eponymous table-valued function */
