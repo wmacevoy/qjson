@@ -65,7 +65,7 @@ EXPORTED='["_wasm_db_open","_wasm_db_close","_wasm_db_exec","_wasm_db_errmsg","_
 RUNTIME='["cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]'
 
 echo "Compiling WASM..."
-emcc sqlcipher_wasm.c qjson_wasm_init.c qjson.c libbf.c cutils.c \
+emcc sqlcipher_wasm.c opfs_vfs.c qjson_wasm_init.c qjson.c libbf.c cutils.c \
     -I. -I"$LIBRESSL_NATIVE/include" \
     -L"$LIBRESSL_WASM/lib" \
     -O2 \
