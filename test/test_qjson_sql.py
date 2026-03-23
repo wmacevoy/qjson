@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from qjson_sql import (qjson_sql_adapter, round_down, round_up,
                         _project_numeric, _classify_value)
-from qjson import BigInt, BigFloat, Blob
+from qjson import BigInt, BigFloat, Blob, Unbound
 from decimal import Decimal
 
 
@@ -81,6 +81,8 @@ def test_classify():
     assert _classify_value(Blob(b'\x01')) == ('blob', None)
     assert _classify_value([1, 2]) == ('array', None)
     assert _classify_value({'a': 1}) == ('object', None)
+    assert _classify_value(Unbound('X')) == ('unbound', 'X')
+    assert _classify_value(Unbound('_')) == ('unbound', '_')
     print('  _classify_value: OK')
 
 
@@ -177,6 +179,28 @@ def run_adapter_tests(adapter, label):
     assert v['meta'] == {'ok': True}
     assert isinstance(v['price'], Decimal)
     assert isinstance(v['items'][0], BigInt)
+
+    # Unbound — bare name
+    vid = a['store'](Unbound('X'))
+    v = a['load'](vid)
+    assert isinstance(v, Unbound) and v.name == 'X'
+
+    # Unbound — anonymous
+    vid = a['store'](Unbound('_'))
+    v = a['load'](vid)
+    assert isinstance(v, Unbound) and v.name == '_'
+
+    # Unbound — in array (Prolog-style pattern)
+    vid = a['store'](['reading', Unbound('Sensor'), Unbound('Val')])
+    v = a['load'](vid)
+    assert isinstance(v[1], Unbound) and v[1].name == 'Sensor'
+    assert isinstance(v[2], Unbound) and v[2].name == 'Val'
+
+    # Unbound — in object
+    vid = a['store']({'query': Unbound('X'), 'fixed': 42})
+    v = a['load'](vid)
+    assert isinstance(v['query'], Unbound) and v['query'].name == 'X'
+    assert v['fixed'] == 42.0
 
     # Remove
     vid = a['store']([1, 2, 3])
