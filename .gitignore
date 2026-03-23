@@ -5,3 +5,4 @@ test_qjson
 __pycache__/
 *.pyc
 node_modules/
+*.dSYM/
