@@ -49,6 +49,7 @@ cd "$QJSON_DIR/wasm/dist"
 # Copy sources
 cp "$SQLCIPHER_DIR/sqlite3.c" .
 cp "$SQLCIPHER_DIR/sqlite3.h" .
+cp "$SQLCIPHER_DIR/src/sqlite3ext.h" .
 cp "$SQLCIPHER_DIR/wasm/sqlcipher_wasm.c" .
 cp "$SQLCIPHER_DIR/wasm/opfs_vfs.c" .
 cp "$QJSON_DIR/wasm/qjson_wasm_init.c" .
@@ -91,7 +92,7 @@ emcc sqlcipher_wasm.c qjson_wasm_init.c qjson.c libbf.c cutils.c \
     -o sqlcipher.js
 
 # Clean up source copies
-rm -f sqlite3.c sqlite3.h sqlcipher_wasm.c opfs_vfs.c \
+rm -f sqlite3.c sqlite3.h sqlite3ext.h sqlcipher_wasm.c opfs_vfs.c \
       qjson_wasm_init.c qjson.h qjson.c qjson_sqlite_ext.c \
       libbf.h libbf.c cutils.h cutils.c
 
