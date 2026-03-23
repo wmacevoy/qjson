@@ -18,26 +18,43 @@ jobs:
     strategy:
       matrix:
         include:
+          # Debian (glibc) — works on Debian, Ubuntu, RHEL, etc.
           - os: ubuntu-latest
-            artifact: qjson_ext-linux-x64.so
-            ext: .so
+            container: debian:bookworm
+            artifact: qjson_ext-linux-glibc-x64.so
+            deps: apt-get update && apt-get install -y gcc make libc6-dev
           - os: ubuntu-24.04-arm
-            artifact: qjson_ext-linux-arm64.so
-            ext: .so
+            container: debian:bookworm
+            artifact: qjson_ext-linux-glibc-arm64.so
+            deps: apt-get update && apt-get install -y gcc make libc6-dev
+          # Alpine (musl) — works on Alpine, Docker scratch, etc.
+          - os: ubuntu-latest
+            container: alpine:3.19
+            artifact: qjson_ext-linux-musl-x64.so
+            deps: apk add gcc make musl-dev
+          # macOS
           - os: macos-latest
+            container: ""
             artifact: qjson_ext-macos-arm64.dylib
-            ext: .dylib
+            deps: ""
           - os: macos-13
+            container: ""
             artifact: qjson_ext-macos-x64.dylib
-            ext: .dylib
+            deps: ""
 
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container || null }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install build deps
+        if: matrix.deps != ''
+        run: ${{ matrix.deps }}
       - name: Build
-        run: make qjson_ext${{ matrix.ext }}
-      - name: Rename
-        run: cp qjson_ext${{ matrix.ext }} ${{ matrix.artifact }}
+        run: |
+          EXT=.so
+          if echo "${{ matrix.artifact }}" | grep -q dylib; then EXT=.dylib; fi
+          make qjson_ext$EXT
+          cp qjson_ext$EXT ${{ matrix.artifact }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
