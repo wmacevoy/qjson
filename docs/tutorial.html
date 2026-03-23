@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>QJSON Tutorial</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, sans-serif; max-width: 750px; margin: 0 auto;
+         padding: 1em; background: #0d1117; color: #c9d1d9; line-height: 1.6; }
+  h1 { color: #58a6ff; border-bottom: 1px solid #30363d; padding-bottom: 0.3em; }
+  h2 { color: #58a6ff; margin-top: 2em; }
+  h3 { color: #79c0ff; }
+  code { background: #161b22; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #161b22; padding: 1em; border-radius: 6px; overflow-x: auto; }
+  pre code { background: none; padding: 0; }
+  a { color: #58a6ff; }
+  .playground { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+                margin: 1em 0; padding: 0; overflow: hidden; }
+  .playground-header { background: #21262d; padding: 0.5em 1em; font-size: 0.85em; color: #8b949e;
+                       display: flex; justify-content: space-between; align-items: center; }
+  .playground textarea { width: 100%; padding: 1em; font-family: monospace; font-size: 0.9em;
+                         background: #0d1117; color: #c9d1d9; border: none; border-top: 1px solid #30363d;
+                         resize: vertical; min-height: 60px; outline: none; }
+  .playground .output { padding: 1em; font-family: monospace; font-size: 0.9em;
+                        border-top: 1px solid #30363d; min-height: 40px; white-space: pre-wrap; }
+  .playground button { background: #238636; color: #fff; border: none; padding: 0.3em 0.8em;
+                       border-radius: 4px; cursor: pointer; font-size: 0.85em; }
+  .playground button:hover { background: #2ea043; }
+  .ok { color: #3fb950; }
+  .err { color: #f85149; }
+  .val { color: #d29922; }
+  .dim { color: #484f58; }
+  .note { background: #1c2128; border-left: 3px solid #58a6ff; padding: 0.8em 1em;
+          margin: 1em 0; border-radius: 0 6px 6px 0; }
+  #status { position: fixed; top: 0; right: 0; padding: 0.5em 1em; font-size: 0.8em;
+            background: #161b22; border-bottom-left-radius: 6px; }
+</style>
+</head>
+<body>
+
+<div id="status">Loading WASM...</div>
+
+<h1>QJSON Tutorial</h1>
+
+<p>Interactive tutorial — all code runs in your browser via
+SQLCipher WASM with exact arithmetic (libbf).</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>1. JSON — everything you know still works</h2>
+
+<p>Valid JSON is valid QJSON. Try editing:</p>
+
+<div class="playground" id="pg-json">
+  <div class="playground-header">
+    <span>QJSON input</span>
+    <button onclick="run('pg-json')">Run ▶</button>
+  </div>
+  <textarea>{"name": "Alice", "age": 30, "scores": [95, 87, 92]}</textarea>
+  <div class="output"></div>
+</div>
+
+<p>The value is stored in SQL, reconstructed as canonical QJSON.
+Keys are sorted, whitespace removed — the canonical form is
+deterministic.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>2. Exact numerics — no more floating-point surprises</h2>
+
+<h3>The problem</h3>
+
+<div class="playground" id="pg-float">
+  <div class="playground-header">
+    <span>JavaScript</span>
+    <button onclick="runJS('pg-float')">Run ▶</button>
+  </div>
+  <textarea>0.1 + 0.2</textarea>
+  <div class="output"></div>
+</div>
+
+<h3>The fix: BigDecimal (M suffix)</h3>
+
+<div class="playground" id="pg-exact">
+  <div class="playground-header">
+    <span>QJSON SQL — exact arithmetic</span>
+    <button onclick="runSQL('pg-exact')">Run ▶</button>
+  </div>
+  <textarea>SELECT qjson_add('0.1', '0.2')</textarea>
+  <div class="output"></div>
+</div>
+
+<p>QJSON adds three exact numeric types:</p>
+
+<pre><code>42N                  // BigInt — arbitrary precision integer
+67432.50M            // BigDecimal — exact base-10
+3.14159265358979L    // BigFloat — arbitrary precision float</code></pre>
+
+<p>Try storing exact values:</p>
+
+<div class="playground" id="pg-types">
+  <div class="playground-header">
+    <span>QJSON input</span>
+    <button onclick="run('pg-types')">Run ▶</button>
+  </div>
+  <textarea>{
+  "price": "67432.50M",
+  "count": "9007199254740993N",
+  "pi": "3.14159265358979323846L"
+}</textarea>
+  <div class="output"></div>
+</div>
+
+<div class="note">
+  <code>is_json()</code> — true if no QJSON extensions (pure JSON).<br>
+  <code>is_bound()</code> — true if no unbound variables.
+</div>
+
+<h3>Exact math in SQL</h3>
+
+<div class="playground" id="pg-math">
+  <div class="playground-header">
+    <span>SQL — try any expression</span>
+    <button onclick="runSQL('pg-math')">Run ▶</button>
+  </div>
+  <textarea>SELECT qjson_pi(100)</textarea>
+  <div class="output"></div>
+</div>
+
+<p>Available: <code>qjson_add</code>, <code>sub</code>,
+<code>mul</code>, <code>div</code>, <code>pow</code>,
+<code>sqrt</code>, <code>exp</code>, <code>log</code>,
+<code>sin</code>, <code>cos</code>, <code>tan</code>,
+<code>pi</code>. All exact via libbf.</p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>3. Unbound variables — pattern matching + solving</h2>
+
+<p>The <code>?</code> prefix marks an unknown value:</p>
+
+<div class="playground" id="pg-unbound">
+  <div class="playground-header">
+    <span>QJSON input</span>
+    <button onclick="run('pg-unbound')">Run ▶</button>
+  </div>
+  <textarea>{"present": "10000M", "rate": "0.05M", "periods": "10M", "future": "?FV"}</textarea>
+  <div class="output"></div>
+</div>
+
+<p>An unbound variable matches anything in queries and can be
+<strong>solved</strong> by a constraint formula.</p>
+
+<h3>The solver</h3>
+
+<p>Compound interest: FV = PV × (1 + r)<sup>n</sup></p>
+
+<div class="playground" id="pg-solve">
+  <div class="playground-header">
+    <span>Solve — edit values, leave one as ?</span>
+    <button onclick="runSolve('pg-solve')">Solve ▶</button>
+  </div>
+  <textarea>present = 10000
+rate = 0.05
+periods = 10
+future = ?</textarea>
+  <div class="output"></div>
+</div>
+
+<p>Try changing which field is <code>?</code> — the same formula
+solves in any direction:</p>
+
+<ul>
+  <li>Leave <code>future = ?</code> → computes future value</li>
+  <li>Leave <code>present = ?</code> → computes present value</li>
+  <li>Leave <code>rate = ?</code> → finds the rate (nth root)</li>
+  <li>Leave <code>periods = ?</code> → finds the time (logarithm)</li>
+</ul>
+
+<div class="note">
+  The formula <code>.future == .present * POWER(1 + .rate, .periods)</code>
+  is decomposed into 3-term constraints. The solver uses inverse operations
+  (division for multiplication, logarithm for power) automatically.
+  All arithmetic is exact — no floating-point errors.
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>4. Queries</h2>
+
+<div class="playground" id="pg-query">
+  <div class="playground-header">
+    <span>SQL — query stored data</span>
+    <button onclick="runSQL('pg-query')">Run ▶</button>
+  </div>
+  <textarea>SELECT qjson_add('0.1', '0.2'),
+       qjson_mul('6', '7'),
+       qjson_pow('2', '10'),
+       qjson_div('1', '3', 50)</textarea>
+  <div class="output"></div>
+</div>
+
+<p>Full documentation: <a href="qjson.md">docs/qjson.md</a></p>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+
+<script src="sqlcipher-api.js"></script>
+<script>
+var db = null;
+
+async function init() {
+  try {
+    db = await SQLCipher.open({ filename: "/tutorial.db", key: "tutorial" });
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_value (id INTEGER PRIMARY KEY, type TEXT NOT NULL)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_number (id INTEGER PRIMARY KEY, value_id INTEGER, lo REAL, str TEXT, hi REAL)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_string (id INTEGER PRIMARY KEY, value_id INTEGER, value TEXT)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_blob (id INTEGER PRIMARY KEY, value_id INTEGER, value BLOB)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_array (id INTEGER PRIMARY KEY, value_id INTEGER)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_array_item (id INTEGER PRIMARY KEY, array_id INTEGER, idx INTEGER, value_id INTEGER)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_object (id INTEGER PRIMARY KEY, value_id INTEGER)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_object_item (id INTEGER PRIMARY KEY, object_id INTEGER, key TEXT, value_id INTEGER)");
+    document.getElementById("status").innerHTML = '<span class="ok">WASM ready</span>';
+  } catch(e) {
+    document.getElementById("status").innerHTML = '<span class="err">WASM failed: ' + e.message + '</span>';
+    // Fallback: show instructions
+    document.getElementById("status").innerHTML +=
+      '<br><span class="dim">Download WASM from releases and serve locally</span>';
+  }
+}
+
+function out(id, html) {
+  document.getElementById(id).querySelector('.output').innerHTML = html;
+}
+
+async function run(id) {
+  var text = document.getElementById(id).querySelector('textarea').value.trim();
+  if (!db) { out(id, '<span class="err">WASM not loaded</span>'); return; }
+  try {
+    // Parse as JSON/QJSON, store, reconstruct
+    var parsed = JSON.parse(text); // basic parse
+    out(id, '<span class="dim">Storing...</span>');
+
+    // Store via SQL
+    var result = await storeValue(parsed);
+    var reconstructed = await db.select(
+      "SELECT qjson_reconstruct(?, 'qjson_')", [result]);
+    var qjson = reconstructed.length ? Object.values(reconstructed[0])[0] : '?';
+
+    out(id, '<span class="ok">Stored as value_id ' + result + '</span>\n' +
+            '<span class="val">' + escHtml(qjson) + '</span>');
+  } catch(e) {
+    out(id, '<span class="err">' + escHtml(e.message) + '</span>');
+  }
+}
+
+async function runJS(id) {
+  var text = document.getElementById(id).querySelector('textarea').value.trim();
+  try {
+    var result = eval(text);
+    out(id, '<span class="val">' + result + '</span>\n' +
+            '<span class="dim">JavaScript floating-point: 0.1 + 0.2 ≠ 0.3</span>');
+  } catch(e) { out(id, '<span class="err">' + e.message + '</span>'); }
+}
+
+async function runSQL(id) {
+  var text = document.getElementById(id).querySelector('textarea').value.trim();
+  if (!db) { out(id, '<span class="err">WASM not loaded</span>'); return; }
+  try {
+    var rows = await db.select(text);
+    if (rows.length === 0) { out(id, '<span class="dim">(no rows)</span>'); return; }
+    var lines = [];
+    for (var i = 0; i < rows.length; i++) {
+      var cols = Object.entries(rows[i]);
+      var parts = [];
+      for (var j = 0; j < cols.length; j++)
+        parts.push(cols[j][0] + ' = <span class="val">' + escHtml(String(cols[j][1])) + '</span>');
+      lines.push(parts.join('  '));
+    }
+    out(id, lines.join('\n'));
+  } catch(e) { out(id, '<span class="err">' + escHtml(e.message) + '</span>'); }
+}
+
+async function runSolve(id) {
+  var text = document.getElementById(id).querySelector('textarea').value.trim();
+  if (!db) { out(id, '<span class="err">WASM not loaded</span>'); return; }
+  try {
+    // Parse key=value lines
+    var doc = {};
+    var lines = text.split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      var parts = lines[i].split('=');
+      if (parts.length !== 2) continue;
+      var key = parts[0].trim();
+      var val = parts[1].trim();
+      doc[key] = val;
+    }
+
+    // Store document with ? as unbound
+    var obj = {};
+    for (var k in doc) {
+      if (doc[k] === '?' || doc[k].startsWith('?'))
+        obj[k] = null; // will be stored as unbound
+      else
+        obj[k] = parseFloat(doc[k]);
+    }
+
+    // Clear and store via direct SQL
+    await db.exec("DELETE FROM qjson_value");
+    await db.exec("DELETE FROM qjson_number");
+    await db.exec("DELETE FROM qjson_object");
+    await db.exec("DELETE FROM qjson_object_item");
+
+    // Store root object
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('object')");
+    var root_rows = await db.select("SELECT last_insert_rowid() AS id");
+    var root_id = root_rows[0].id;
+    await db.exec("INSERT INTO qjson_object (value_id) VALUES (?)", [root_id]);
+    var obj_rows = await db.select("SELECT last_insert_rowid() AS id");
+    var obj_id = obj_rows[0].id;
+
+    // Store fields
+    for (var k in obj) {
+      if (obj[k] === null) {
+        await db.exec("INSERT INTO qjson_value (type) VALUES ('unbound')");
+      } else {
+        await db.exec("INSERT INTO qjson_value (type) VALUES ('number')");
+      }
+      var vid_rows = await db.select("SELECT last_insert_rowid() AS id");
+      var vid = vid_rows[0].id;
+
+      if (obj[k] === null) {
+        await db.exec("INSERT INTO qjson_number (value_id, lo, str, hi) VALUES (?, -1e308, '?', 1e308)", [vid]);
+      } else {
+        await db.exec("INSERT INTO qjson_number (value_id, lo, str, hi) VALUES (?, ?, NULL, ?)",
+          [vid, obj[k], obj[k]]);
+      }
+      await db.exec("INSERT INTO qjson_object_item (object_id, key, value_id) VALUES (?, ?, ?)",
+        [obj_id, k, vid]);
+    }
+
+    // Solve
+    var formula = '.future == .present * POWER(1 + .rate, .periods)';
+    var solve_rows = await db.select("SELECT qjson_solve(?, ?)", [root_id, formula]);
+    var solved = solve_rows.length ? Object.values(solve_rows[0])[0] : 0;
+
+    // Read back
+    var result = await db.select("SELECT qjson_reconstruct(?, 'qjson_')", [root_id]);
+    var qjson = result.length ? Object.values(result[0])[0] : '?';
+
+    var status = solved ? '<span class="ok">SOLVED</span>' : '<span class="err">UNDERDETERMINED</span>';
+    out(id, status + '\n<span class="val">' + escHtml(qjson) + '</span>\n\n' +
+            '<span class="dim">Formula: ' + formula + '</span>');
+  } catch(e) {
+    out(id, '<span class="err">' + escHtml(e.message) + '</span>');
+  }
+}
+
+async function storeValue(val) {
+  if (val === null) {
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('null')");
+  } else if (val === true) {
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('true')");
+  } else if (val === false) {
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('false')");
+  } else if (typeof val === 'number') {
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('number')");
+    var rows = await db.select("SELECT last_insert_rowid() AS id");
+    var vid = rows[0].id;
+    await db.exec("INSERT INTO qjson_number (value_id, lo, str, hi) VALUES (?, ?, NULL, ?)", [vid, val, val]);
+    return vid;
+  } else if (typeof val === 'string') {
+    if (val.match(/^-?\d+(\.\d+)?[NMLnml]$/)) {
+      // QJSON numeric string
+      await db.exec("INSERT INTO qjson_value (type) VALUES ('bigdec')");
+      var rows = await db.select("SELECT last_insert_rowid() AS id");
+      var vid = rows[0].id;
+      var raw = val.slice(0, -1);
+      var fv = parseFloat(raw);
+      await db.exec("INSERT INTO qjson_number (value_id, lo, str, hi) VALUES (?, ?, ?, ?)",
+        [vid, fv, raw, fv]);
+      return vid;
+    }
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('string')");
+    var rows = await db.select("SELECT last_insert_rowid() AS id");
+    var vid = rows[0].id;
+    await db.exec("INSERT INTO qjson_string (value_id, value) VALUES (?, ?)", [vid, val]);
+    return vid;
+  } else if (Array.isArray(val)) {
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('array')");
+    var rows = await db.select("SELECT last_insert_rowid() AS id");
+    var vid = rows[0].id;
+    await db.exec("INSERT INTO qjson_array (value_id) VALUES (?)", [vid]);
+    var arr_rows = await db.select("SELECT last_insert_rowid() AS id");
+    var arr_id = arr_rows[0].id;
+    for (var i = 0; i < val.length; i++) {
+      var item_vid = await storeValue(val[i]);
+      await db.exec("INSERT INTO qjson_array_item (array_id, idx, value_id) VALUES (?, ?, ?)",
+        [arr_id, i, item_vid]);
+    }
+    return vid;
+  } else if (typeof val === 'object') {
+    await db.exec("INSERT INTO qjson_value (type) VALUES ('object')");
+    var rows = await db.select("SELECT last_insert_rowid() AS id");
+    var vid = rows[0].id;
+    await db.exec("INSERT INTO qjson_object (value_id) VALUES (?)", [vid]);
+    var obj_rows = await db.select("SELECT last_insert_rowid() AS id");
+    var obj_id = obj_rows[0].id;
+    var keys = Object.keys(val);
+    for (var i = 0; i < keys.length; i++) {
+      var item_vid = await storeValue(val[keys[i]]);
+      await db.exec("INSERT INTO qjson_object_item (object_id, key, value_id) VALUES (?, ?, ?)",
+        [obj_id, keys[i], item_vid]);
+    }
+    return vid;
+  }
+  await db.exec("INSERT INTO qjson_value (type) VALUES ('null')");
+  var rows = await db.select("SELECT last_insert_rowid() AS id");
+  return rows[0].id;
+}
+
+function escHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+init();
+</script>
+</body>
+</html>
