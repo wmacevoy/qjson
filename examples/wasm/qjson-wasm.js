@@ -55,6 +55,8 @@ var QJSONDatabase = (function() {
     if (value === false) return {type: "false", raw: null};
     if (typeof value === "bigint") return {type: "bigint", raw: String(value)};
     if (typeof value === "number") return {type: "number", raw: null};
+    if (typeof value === "object" && value !== null && value.$qjson === "unbound")
+      return {type: "unbound", raw: (value.name != null) ? value.name : ""};
     if (typeof value === "string") {
       var last = value.charAt(value.length - 1);
       if ((last === "N" || last === "n") && /^-?\d+$/.test(value.slice(0, -1)))
@@ -112,6 +114,13 @@ var QJSONDatabase = (function() {
       await this._db.exec(
         'INSERT INTO "' + PREFIX + 'number" (value_id, lo, str, hi) VALUES (?, ?, ?, ?)',
         [vid, v, (v === v && isFinite(v) && String(v) === c.raw) ? null : c.raw, v]);
+      return vid;
+    }
+
+    if (c.type === "unbound") {
+      await this._db.exec(
+        'INSERT INTO "' + PREFIX + 'number" (value_id, lo, str, hi) VALUES (?, ?, ?, ?)',
+        [vid, -Infinity, "?" + c.raw, Infinity]);
       return vid;
     }
 
@@ -173,6 +182,14 @@ var QJSONDatabase = (function() {
       if (type === "bigfloat") return raw + "L";
     }
 
+    if (type === "unbound") {
+      var nr = await this._db.select(
+        'SELECT str FROM "' + PREFIX + 'number" WHERE value_id = ?', [vid]);
+      var name = (nr.length && nr[0].str) ? nr[0].str : "?";
+      if (name.charAt(0) === "?") name = name.substring(1);
+      return {$qjson: "unbound", name: name};
+    }
+
     if (type === "string") {
       var sr = await this._db.select(
         'SELECT value FROM "' + PREFIX + 'string" WHERE value_id = ?', [vid]);
@@ -229,6 +246,16 @@ var QJSONDatabase = (function() {
       if (type === "bigint") return raw + "N";
       if (type === "bigdec") return raw + "M";
       if (type === "bigfloat") return raw + "L";
+    }
+
+    if (type === "unbound") {
+      var nr = await this._db.select(
+        'SELECT str FROM "' + PREFIX + 'number" WHERE value_id = ?', [vid]);
+      var name = (nr.length && nr[0].str) ? nr[0].str : "?";
+      if (name.charAt(0) === "?") name = name.substring(1);
+      if (name === "") return "?";
+      if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(name)) return "?" + name;
+      return '?"' + name.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
     }
 
     if (type === "string") {

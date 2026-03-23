@@ -855,3 +855,83 @@ SELECT * FROM qjson_select(1,
 
 Key names and string values have no length limit — all
 allocations are dynamic.
+
+## Exact arithmetic
+
+17 SQL functions backed by libbf (arbitrary precision).
+All take and return TEXT decimal strings.
+
+| Function | Operation |
+|----------|-----------|
+| `qjson_add(a, b)` | a + b |
+| `qjson_sub(a, b)` | a - b |
+| `qjson_mul(a, b)` | a * b |
+| `qjson_div(a, b [, prec])` | a / b |
+| `qjson_pow(a, b [, prec])` | a ^ b |
+| `qjson_neg(a)` | -a |
+| `qjson_abs(a)` | |a| |
+| `qjson_sqrt(a [, prec])` | √a |
+| `qjson_exp(a [, prec])` | e^a |
+| `qjson_log(a [, prec])` | ln(a) |
+| `qjson_sin/cos/tan(a)` | trigonometric |
+| `qjson_asin/acos/atan(a)` | inverse trig |
+| `qjson_pi([prec])` | π |
+
+Default precision: 113 bits (~34 decimal digits, IEEE 754 quad).
+Optional `prec` parameter specifies decimal digits.
+
+```sql
+SELECT qjson_add('0.1', '0.2');        -- → '0.3' (exact)
+SELECT qjson_div('1', '3', 50);        -- → '0.33333...' (50 digits)
+SELECT qjson_pi(100);                  -- → π to 100 digits
+```
+
+## Constraint solver
+
+Five 3-term constraint functions.  Each asserts a relationship
+between three values.  Arguments are INTEGER (value_id, lvalue)
+or TEXT (literal, rvalue).
+
+| Function | Constraint | Solves for a | Solves for b | Solves for c |
+|----------|-----------|-------------|-------------|-------------|
+| `qjson_solve_add(a, b, c)` | a + b = c | c - b | c - a | a + b |
+| `qjson_solve_sub(a, b, c)` | a - b = c | c + b | a - c | a - b |
+| `qjson_solve_mul(a, b, c)` | a * b = c | c / b | c / a | a * b |
+| `qjson_solve_div(a, b, c)` | a / b = c | c * b | a / c | a / b |
+| `qjson_solve_pow(a, b, c)` | a ^ b = c | c^(1/b) | log(c)/log(a) | a ^ b |
+
+Return codes:
+
+| Code | Meaning | Propagator action |
+|------|---------|-------------------|
+| 0 | Inconsistent (all bound, wrong) | Stop — error |
+| 1 | Solved (updated one unbound) | Continue — progress |
+| 2 | Consistent (all bound, correct) | Done |
+| 3 | Underdetermined (2+ unbound) | Retry later |
+
+### Constraint propagation (leaf folding)
+
+Store a problem with unknowns as Unbound (`?`) values.
+Chain constraints.  The propagator runs them in a worklist:
+find constraints with exactly 1 unbound (leaves), solve them,
+repeat until no more progress.  Each constraint fires at most
+once.
+
+```python
+# Mortgage: P = M * r * (1+r)^n / ((1+r)^n - 1)
+constraints = [
+    ("SELECT qjson_solve_div(?, '12', ?)",  (rate_id, mr_id)),
+    ("SELECT qjson_solve_add('1', ?, ?)",   (mr_id, opr_id)),
+    ("SELECT qjson_solve_pow(?, ?, ?)",     (opr_id, months_id, factor_id)),
+    ("SELECT qjson_solve_sub(?, '1', ?)",   (factor_id, denom_id)),
+    ("SELECT qjson_solve_mul(?, ?, ?)",     (principal_id, mr_id, pr_id)),
+    ("SELECT qjson_solve_mul(?, ?, ?)",     (pr_id, factor_id, num_id)),
+    ("SELECT qjson_solve_div(?, ?, ?)",     (num_id, denom_id, payment_id)),
+]
+propagate(conn, constraints)  # solves for whichever field is ?
+```
+
+Change which field is `?` and the same constraints solve in
+the other direction.  The solver is bidirectional — it uses
+inverse operations (subtraction for addition, logarithm for
+power, etc.) automatically.
