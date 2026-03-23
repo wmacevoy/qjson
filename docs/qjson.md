@@ -888,76 +888,92 @@ SELECT qjson_pi(100);                  -- → π to 100 digits
 
 ## Constraint solver
 
-Five 3-term constraint functions.  Each asserts a relationship
-between three values.  Arguments are INTEGER (value_id, lvalue)
-or TEXT (literal, rvalue).
+`qjson_solve(root_id, formula)` — store a document with one
+unknown (`?`), write the formula, the solver fills it in.
+One call, any direction.
 
-| Function | Constraint | Solves for a | Solves for b | Solves for c |
-|----------|-----------|-------------|-------------|-------------|
-| `qjson_solve_add(a, b, c)` | a + b = c | c - b | c - a | a + b |
-| `qjson_solve_sub(a, b, c)` | a - b = c | c + b | a - c | a - b |
-| `qjson_solve_mul(a, b, c)` | a * b = c | c / b | c / a | a * b |
-| `qjson_solve_div(a, b, c)` | a / b = c | c * b | a / c | a / b |
-| `qjson_solve_pow(a, b, c)` | a ^ b = c | c^(1/b) | log(c)/log(a) | a ^ b |
+```sql
+SELECT qjson_solve(root_id,
+    '.future == .present * POWER(1 + .rate, .periods)');
+```
 
-Return codes:
+### How it works
 
-| Code | Meaning | Propagator action |
-|------|---------|-------------------|
-| 0 | Inconsistent (all bound, wrong) | Stop — error |
-| 1 | Solved (updated one unbound) | Continue — progress |
-| 2 | Consistent (all bound, correct) | Done |
-| 3 | Underdetermined (2+ unbound) | Retry later |
+The solver:
+1. Parses the formula into an expression tree
+2. Decomposes the tree into 3-term constraints with
+   anonymous temporaries (the user never sees them)
+3. Runs leaf-folding propagation: constraints with exactly
+   1 unknown fire first, newly solved values unlock more
+4. Each constraint uses inverse operations automatically
+   (division for multiplication, logarithm for power, etc.)
 
-### Constraint propagation (leaf folding)
-
-Store a problem with unknowns as Unbound (`?`) values.
-Chain constraints.  The propagator runs them in a worklist:
-find constraints with exactly 1 unbound (leaves), solve them,
-repeat until no more progress.  Each constraint fires at most
-once.
-
-### Isolation rule
-
-Each unbound value must appear in **exactly one** constraint
-for the solver to isolate it.  If a variable appears in two
-constraints, the solver sees 2+ unknowns in each and returns
-underdetermined.
+All arithmetic is exact via libbf (SQLite) or NUMERIC (PostgreSQL).
 
 ### Example: compound interest
 
-`FV = PV × (1 + r)^n` decomposes into 3 constraints with
-no fan-out — every variable appears exactly once:
-
-```
-.opr    == 1 + .rate         ← rate appears once
-.factor == .opr ** .periods   ← opr, periods appear once
-.future == .present * .factor ← present, factor appear once
-```
-
-Store 3 of 4 user values, leave the 4th as `?`:
+FV = PV × (1 + r)<sup>n</sup>
 
 ```python
-doc = db['store']({
-    'present': parse('10000M'), 'rate': parse('0.05M'),
-    'periods': 10, 'future': Unbound('FV'),
-    'opr': Unbound('opr'), 'factor': Unbound('f'),
+from qjson import Unbound
+from decimal import Decimal
+
+# Store with one unknown
+root = db['store']({
+    'present': Decimal('10000'), 'rate': Decimal('0.05'),
+    'periods': Decimal('10'), 'future': Unbound('FV'),
 })
+
+# One call — the database does the math
+conn.execute("SELECT qjson_solve(?, ?)",
+    (root, '.future == .present * POWER(1 + .rate, .periods)'))
+
+print(db['load'](root)['future'])  # → 16288.9462...
 ```
 
-The same formula solves in any direction:
+Change which field is `?` — the same formula solves in
+any direction:
 
-| Unknown | Inverse operation |
-|---------|-------------------|
-| future | `present × factor` (multiply) |
-| present | `future / factor` (divide) |
-| rate | `factor^(1/n)` then `opr - 1` (nth root) |
-| periods | `log(factor) / log(opr)` (logarithm) |
+| Unknown | Result | Inverse operation |
+|---------|--------|-------------------|
+| future | $16,288.95 | `present * (1+rate)^periods` |
+| present | $12,278.27 | `future / (1+rate)^periods` |
+| rate | 7.18% | nth root then subtract 1 |
+| periods | 10.24 years | logarithm |
 
-The propagator chains through the constraints:
-1. `1 + .rate = .opr` → solves opr (rate is known)
-2. `.opr ^ .periods = .factor` → solves factor (opr just solved)
-3. `.present * .factor = .future` → solves future (factor just solved)
+```sql
+-- Same formula, different unknown — pure SQL
+SELECT qjson_solve(root_id,
+    '.future == .present * POWER(1 + .rate, .periods)');
+SELECT qjson_reconstruct(root_id);
+```
 
-Three passes, three solves, one answer.  Change which field
-is `?` and the same formula runs backward automatically.
+### Expressions in WHERE
+
+Arithmetic works in SELECT queries too (read-only, no solving):
+
+```sql
+SELECT qjson FROM qjson_select
+WHERE root_id = 1 AND select_path = '.present'
+  AND where_expr = '.present * POWER(1 + .rate, .periods) > 16000';
+```
+
+Operators: `+`, `-`, `*`, `/`, `**` (power).
+Functions: `POWER`, `SQRT`, `EXP`, `LOG`, `SIN`, `COS`,
+`TAN`, `ATAN`, `ASIN`, `ACOS`, `PI`.
+
+### Internal mechanism
+
+The solver decomposes expressions into 3-term constraints
+internally using `qjson_solve_add/sub/mul/div/pow`.  These
+are also available directly for advanced use:
+
+| Function | Constraint | Returns |
+|----------|-----------|---------|
+| `qjson_solve_add(a, b, c)` | a + b = c | 0/1/2/3 |
+| `qjson_solve_mul(a, b, c)` | a * b = c | 0/1/2/3 |
+| `qjson_solve_pow(a, b, c)` | a ** b = c | 0/1/2/3 |
+
+Arguments: INTEGER (value_id, can be solved if unbound) or
+TEXT (literal, always bound).  Return codes: 0=inconsistent,
+1=solved, 2=consistent, 3=underdetermined.
