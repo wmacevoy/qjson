@@ -496,6 +496,41 @@ qjson_val *qjson_parse(qjson_arena *a, const char *text, int len) {
     return v;
 }
 
+/* ── Type predicates ─────────────────────────────────────── */
+
+int qjson_is_json(const qjson_val *v) {
+    if (!v) return 1;
+    switch (v->type) {
+    case QJSON_NULL: case QJSON_TRUE: case QJSON_FALSE:
+    case QJSON_NUM: case QJSON_STRING:
+        return 1;
+    case QJSON_ARRAY:
+        for (int i = 0; i < v->arr.count; i++)
+            if (!qjson_is_json(v->arr.items[i])) return 0;
+        return 1;
+    case QJSON_OBJECT:
+        for (int i = 0; i < v->obj.count; i++)
+            if (!qjson_is_json(v->obj.pairs[i].val)) return 0;
+        return 1;
+    default: /* BIGINT, BIGDEC, BIGFLOAT, BLOB, UNBOUND */
+        return 0;
+    }
+}
+
+int qjson_is_bound(const qjson_val *v) {
+    if (!v) return 1;
+    if (v->type == QJSON_UNBOUND) return 0;
+    if (v->type == QJSON_ARRAY) {
+        for (int i = 0; i < v->arr.count; i++)
+            if (!qjson_is_bound(v->arr.items[i])) return 0;
+    }
+    if (v->type == QJSON_OBJECT) {
+        for (int i = 0; i < v->obj.count; i++)
+            if (!qjson_is_bound(v->obj.pairs[i].val)) return 0;
+    }
+    return 1;
+}
+
 /* ── Stringify ───────────────────────────────────────────── */
 
 static int emit(char *buf, int pos, int cap, const char *s, int len) {

@@ -86,6 +86,14 @@ qjson_val *qjson_obj_get(const qjson_val *v, const char *key);
 static inline const char *qjson_unbound_name(const qjson_val *v) { return v && v->type == QJSON_UNBOUND ? v->str.s : NULL; }
 static inline int      qjson_unbound_name_len(const qjson_val *v) { return v && v->type == QJSON_UNBOUND ? v->str.len : 0; }
 
+/* Returns 1 if value is valid JSON (no BigInt/BigDecimal/BigFloat/Blob/Unbound).
+   Recursive: arrays and objects must contain only JSON types. */
+int qjson_is_json(const qjson_val *v);
+
+/* Returns 1 if value contains no Unbound variables.
+   Recursive: arrays and objects must be fully bound. */
+int qjson_is_bound(const qjson_val *v);
+
 /* ── Interval projection ────────────────────────────────── */
 
 /* Project decimal string → [lo, hi] IEEE double interval.

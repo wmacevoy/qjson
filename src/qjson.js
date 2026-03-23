@@ -82,6 +82,45 @@ function Unbound(name) {
   this.name = (name === undefined || name === null) ? "" : String(name);
 }
 
+// ── Type predicates ─────────────────────────────────────────
+
+function qjson_is_json(value) {
+  if (value === null || value === undefined) return true;
+  if (typeof value === "boolean" || typeof value === "number" || typeof value === "string") return true;
+  if (typeof value === "bigint") return false;
+  if (typeof value === "bigdecimal" || typeof value === "bigfloat") return false;
+  if (typeof value === "object") {
+    if (value.$qjson === "blob" || value.$qjson === "unbound") return false;
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i++)
+        if (!qjson_is_json(value[i])) return false;
+      return true;
+    }
+    var keys = Object.keys(value);
+    for (var i = 0; i < keys.length; i++)
+      if (!qjson_is_json(value[keys[i]])) return false;
+    return true;
+  }
+  return false;
+}
+
+function qjson_is_bound(value) {
+  if (typeof value === "object" && value !== null) {
+    if (value.$qjson === "unbound") return false;
+    if (Array.isArray(value)) {
+      for (var i = 0; i < value.length; i++)
+        if (!qjson_is_bound(value[i])) return false;
+      return true;
+    }
+    if (value.$qjson === "blob") return true;
+    var keys = Object.keys(value);
+    for (var i = 0; i < keys.length; i++)
+      if (!qjson_is_bound(value[keys[i]])) return false;
+    return true;
+  }
+  return true;
+}
+
 // ── Parser ──────────────────────────────────────────────────
 
 function qjson_parse(text) {
@@ -384,5 +423,7 @@ if (typeof exports !== "undefined") {
   exports.js64_encode = js64_encode;
   exports.js64_decode = js64_decode;
   exports.Unbound = Unbound;
+  exports.qjson_is_json = qjson_is_json;
+  exports.qjson_is_bound = qjson_is_bound;
 }
-export { qjson_parse, qjson_stringify, js64_encode, js64_decode, Unbound };
+export { qjson_parse, qjson_stringify, js64_encode, js64_decode, Unbound, qjson_is_json, qjson_is_bound };

@@ -163,6 +163,35 @@ class Unbound:
         return hash(("Unbound", self.name))
 
 
+# ── Type predicates ──────────────────────────────────────────
+
+def is_json(value):
+    """True if value contains only standard JSON types (no BigInt/BigDecimal/BigFloat/Blob/Unbound).
+    Recursive for arrays and objects."""
+    if value is None or isinstance(value, bool):
+        return True
+    if isinstance(value, (Unbound, Blob, BigFloat, BigInt, Decimal)):
+        return False
+    if isinstance(value, (int, float, str)):
+        return True
+    if isinstance(value, (list, tuple)):
+        return all(is_json(item) for item in value)
+    if isinstance(value, dict):
+        return all(is_json(v) for v in value.values())
+    return False
+
+
+def is_bound(value):
+    """True if value contains no Unbound variables. Recursive."""
+    if isinstance(value, Unbound):
+        return False
+    if isinstance(value, (list, tuple)):
+        return all(is_bound(item) for item in value)
+    if isinstance(value, dict):
+        return all(is_bound(v) for v in value.values())
+    return True
+
+
 # ── Parser ───────────────────────────────────────────────────
 
 def parse(text):

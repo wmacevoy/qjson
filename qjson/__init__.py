@@ -24,6 +24,8 @@ BigInt = _mod.BigInt
 BigFloat = _mod.BigFloat
 Blob = _mod.Blob
 Unbound = _mod.Unbound
+is_json = _mod.is_json
+is_bound = _mod.is_bound
 js64_encode = _mod.js64_encode
 js64_decode = _mod.js64_decode
 qjson_parse = _mod.qjson_parse if hasattr(_mod, 'qjson_parse') else _mod.parse
@@ -31,5 +33,5 @@ qjson_stringify = _mod.qjson_stringify if hasattr(_mod, 'qjson_stringify') else 
 
 __all__ = [
     "parse", "stringify", "BigInt", "BigFloat", "Blob", "Unbound",
-    "js64_encode", "js64_decode",
+    "is_json", "is_bound", "js64_encode", "js64_decode",
 ]
