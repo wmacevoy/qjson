@@ -14,6 +14,7 @@ env:
 
 jobs:
   # ── Pre-built SQLite extensions ─────────────────────────
+  # Built against sqlcipher-libressl headers for compatibility.
   sqlite-ext:
     strategy:
       matrix:
@@ -22,16 +23,16 @@ jobs:
           - os: ubuntu-latest
             container: debian:bookworm
             artifact: qjson_ext-linux-glibc-x64.so
-            deps: apt-get update && apt-get install -y gcc make libc6-dev
+            deps: apt-get update && apt-get install -y gcc make libc6-dev libsqlite3-dev
           - os: ubuntu-24.04-arm
             container: debian:bookworm
             artifact: qjson_ext-linux-glibc-arm64.so
-            deps: apt-get update && apt-get install -y gcc make libc6-dev
+            deps: apt-get update && apt-get install -y gcc make libc6-dev libsqlite3-dev
           # Alpine (musl) — works on Alpine, Docker scratch, etc.
           - os: ubuntu-latest
             container: alpine:3.19
             artifact: qjson_ext-linux-musl-x64.so
-            deps: apk add gcc make musl-dev
+            deps: apk add gcc make musl-dev sqlite-dev
           # macOS
           - os: macos-latest
             container: ""
