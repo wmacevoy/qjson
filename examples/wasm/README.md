@@ -1,47 +1,68 @@
-# QJSON + SQLCipher WASM Example
+# QJSON WASM Examples
 
-Encrypted QJSON storage in the browser using SQLCipher WebAssembly.
+Encrypted QJSON storage and exact arithmetic in the browser,
+powered by SQLCipher WASM with the QJSON extension (libbf)
+compiled in.
 
-## Setup
-
-1. Build sqlcipher-libressl WASM (or download release artifacts):
-
-```bash
-cd ../sqlcipher-libressl
-# follow WASM build instructions in that repo
-```
-
-2. Copy WASM files to this directory:
+## Quick start
 
 ```bash
-cp ../sqlcipher-libressl/wasm/dist/sqlcipher.js .
-cp ../sqlcipher-libressl/wasm/dist/sqlcipher.wasm .
-cp ../sqlcipher-libressl/wasm/sqlcipher-worker.js .
-cp ../sqlcipher-libressl/wasm/sqlcipher-api.js .
-```
+# 1. Download the WASM package from the release
+curl -sL https://github.com/wmacevoy/qjson/releases/download/v1.0.0/qjson-sqlcipher-wasm.tar.gz | tar xz
 
-3. Serve with any HTTP server (OPFS requires secure context):
+# 2. Copy an example into the same directory
+cp examples/wasm/mortgage.html .
 
-```bash
+# 3. Serve (OPFS requires secure context)
 python3 -m http.server 8080
-# open http://localhost:8080
+# open http://localhost:8080/mortgage.html
 ```
 
-## What it demonstrates
+## Examples
 
-- **Encrypted storage**: All QJSON data encrypted at rest with SQLCipher
-- **Exact numerics**: BigInt (`9007199254740993N`), BigDecimal (`0.003M`), BigFloat (`3.14159...L`) survive the full round-trip
-- **QJSON reconstruction**: Stored values reconstructed as canonical QJSON text
-- **Interval projection**: `[lo, str, hi]` columns visible in direct SQL queries
-- **Persistence**: OPFS (durable per COMMIT) or IndexedDB (durable on save)
-- **Secure deletion**: Shred button overwrites all data with random bytes
+### mortgage.html
 
-## Files
+Exact mortgage calculator with constraint solver.
+Leave one field blank — the solver fills it in via
+`qjson_solve_*` SQL functions (libbf arithmetic).
+
+- Solve for payment, principal, months, or rate
+- All math runs inside SQLCipher (no JS arithmetic)
+- Encrypted at rest via OPFS or IndexedDB
+
+### index.html
+
+QJSON storage demo — store, load, reconstruct, query,
+export, shred.
+
+## What's in the WASM package
+
+The release artifact `qjson-sqlcipher-wasm.tar.gz` contains:
 
 | File | Role |
 |------|------|
-| `index.html` | Demo page with tests |
-| `qjson-wasm.js` | QJSON adapter wrapping SQLCipher unified API |
-| `sqlcipher-api.js` | SQLCipher v0.2.0 unified API (from sqlcipher-libressl) |
-| `sqlcipher-worker.js` | Web Worker with OPFS/IndexedDB backends |
-| `sqlcipher.js` + `.wasm` | Compiled SQLCipher (from sqlcipher-libressl) |
+| `sqlcipher.js` + `sqlcipher.wasm` | SQLCipher + QJSON extension (one binary) |
+| `sqlcipher-worker.js` | Web Worker with OPFS/IndexedDB persistence |
+| `sqlcipher-api.js` | Unified async API: `SQLCipher.open()` |
+| `qjson-wasm.js` | QJSON adapter (store/load/reconstruct) |
+
+All QJSON SQL functions are compiled in — no `load_extension()`:
+
+- `qjson_solve_add/sub/mul/div/pow` — constraint solver
+- `qjson_add/sub/mul/div/pow/sqrt/exp/log/sin/cos/...` — arithmetic
+- `qjson_cmp_lt/le/eq/ne/gt/ge` — comparison
+- `qjson_reconstruct` — value → QJSON text
+- `qjson_select` — path query with WHERE
+
+## Building from source
+
+If you need to rebuild the WASM binary:
+
+```bash
+# Requires: emscripten, cmake, tcl
+./wasm/build.sh ../sqlcipher-libressl
+# Output: wasm/dist/
+```
+
+Or use the CI: the release workflow builds it automatically
+on every tagged release.
