@@ -5,6 +5,8 @@
  *   qjson_decimal_cmp(a, b) → INTEGER    exact decimal comparison (libbf)
  *   qjson_cmp(a_lo,a_hi,a_str, b_lo,b_hi,b_str) → INTEGER  3-tier comparison
  *   qjson_reconstruct(vid, prefix) → TEXT   value_id → canonical QJSON text
+ *   qjson_round_down(raw) → REAL   largest IEEE double <= exact(raw)  (libbf)
+ *   qjson_round_up(raw)   → REAL   smallest IEEE double >= exact(raw) (libbf)
  *
  * Table-valued function:
  *   SELECT result_vid, qjson FROM qjson_select(root_id, path, where_expr, prefix)
@@ -1733,6 +1735,35 @@ static void sql_qjson_solve(sqlite3_context *ctx, int argc, sqlite3_value **argv
     sqlite3_result_int(ctx, solved ? 1 : 0);
 }
 
+/* ── Projection: qjson_round_down / qjson_round_up ──────── */
+/* Expose libbf directed rounding as SQL scalar functions.
+   qjson_round_down(raw_text) → REAL  (largest double <= exact)
+   qjson_round_up(raw_text)   → REAL  (smallest double >= exact)  */
+
+static void sql_qjson_round_down(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx); return;
+    }
+    const char *raw = (const char *)sqlite3_value_text(argv[0]);
+    int len = sqlite3_value_bytes(argv[0]);
+    double lo, hi;
+    qjson_project(raw, len, &lo, &hi);
+    sqlite3_result_double(ctx, lo);
+}
+
+static void sql_qjson_round_up(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx); return;
+    }
+    const char *raw = (const char *)sqlite3_value_text(argv[0]);
+    int len = sqlite3_value_bytes(argv[0]);
+    double lo, hi;
+    qjson_project(raw, len, &lo, &hi);
+    sqlite3_result_double(ctx, hi);
+}
+
 #endif /* QJSON_USE_LIBBF */
 
 /* ── Extension entry point ──────────────────────────────── */
@@ -1787,6 +1818,10 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
     sqlite3_create_function(db, "qjson_solve_div", -1, SQLITE_UTF8, NULL, sql_solve_div, NULL, NULL);
     sqlite3_create_function(db, "qjson_solve_pow", -1, SQLITE_UTF8, NULL, sql_solve_pow, NULL, NULL);
     sqlite3_create_function(db, "qjson_solve", -1, SQLITE_UTF8, NULL, sql_qjson_solve, NULL, NULL);
+
+    /* Projection: directed rounding via libbf */
+    sqlite3_create_function(db, "qjson_round_down", 1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_round_down, NULL, NULL);
+    sqlite3_create_function(db, "qjson_round_up",   1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_round_up,   NULL, NULL);
 #endif
 
     /* Register qjson_select as eponymous table-valued function */
