@@ -13,18 +13,19 @@
 /* Hash data, write 32 bytes to out. Returns 0 on success. */
 int qjson_sha256(const void *data, size_t len, void *out);
 
-/* ── AES-256-GCM ─────────────────────────────────────────── */
+/* ── AES-256-CBC + HMAC-SHA256 (encrypt-then-MAC) ────────── */
 
 /* Encrypt plaintext with 32-byte key.
-   Output: 12-byte nonce + ciphertext + 16-byte tag.
-   out must have room for len + 28 bytes.
-   Returns output length, or -1 on error. */
+   Output: 16-byte IV + ciphertext (PKCS7 padded) + 32-byte HMAC.
+   out must have room for len + 64 bytes (IV + padding + HMAC).
+   Returns output length, or -1 on error.
+
+   Portable: same format as PostgreSQL pgcrypto equivalent. */
 int qjson_aes_encrypt(const void *plaintext, size_t len,
                       const void *key32, void *out);
 
 /* Decrypt ciphertext produced by qjson_aes_encrypt.
-   Input: 12-byte nonce + ciphertext + 16-byte tag.
-   out must have room for len - 28 bytes.
+   Verifies HMAC first (constant-time), then decrypts.
    Returns plaintext length, or -1 on auth failure. */
 int qjson_aes_decrypt(const void *ciphertext, size_t len,
                       const void *key32, void *out);

@@ -2146,7 +2146,8 @@ static void sql_encrypt(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
     const void *key = sqlite3_value_blob(argv[1]);
     int key_len = sqlite3_value_bytes(argv[1]);
     if (key_len != 32) { sqlite3_result_error(ctx, "key must be 32 bytes", -1); return; }
-    void *out = sqlite3_malloc(pt_len + 28);
+    /* IV(16) + ciphertext(padded up to +16) + HMAC(32) = up to +64 */
+    void *out = sqlite3_malloc(pt_len + 64);
     int r = qjson_aes_encrypt(pt, pt_len, key, out);
     if (r < 0) { sqlite3_free(out); sqlite3_result_null(ctx); return; }
     sqlite3_result_blob(ctx, out, r, sqlite3_free);

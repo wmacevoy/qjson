@@ -26,72 +26,85 @@ int qjson_sha256(const void *data, size_t len, void *out) {
     return 0;
 }
 
-/* ── AES-256-GCM ─────────────────────────────────────────── */
+/* ── AES-256-CBC + HMAC-SHA256 (encrypt-then-MAC) ────────── */
+/*
+ * Portable format (identical on SQLite/LibreSSL and PostgreSQL/pgcrypto):
+ *   IV (16 bytes) || ciphertext (padded) || HMAC-SHA256(IV||ct, key) (32 bytes)
+ *
+ * AES-256-CBC with PKCS7 padding.  Encrypt-then-MAC.
+ * Same 32-byte key for both AES and HMAC — proven secure for
+ * this combination (Bellare & Namprempre).
+ */
 
-#define NONCE_LEN 12
-#define TAG_LEN   16
+#define IV_LEN   16
+#define HMAC_LEN 32
 
 int qjson_aes_encrypt(const void *plaintext, size_t len,
                       const void *key32, void *out) {
     unsigned char *p = (unsigned char *)out;
 
-    /* Generate random nonce */
-    if (RAND_bytes(p, NONCE_LEN) != 1) return -1;
+    /* Random IV */
+    if (RAND_bytes(p, IV_LEN) != 1) return -1;
 
+    /* AES-256-CBC encrypt */
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return -1;
 
-    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key32, p) != 1)
+    if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key32, p) != 1)
         { EVP_CIPHER_CTX_free(ctx); return -1; }
 
     int outlen;
-    if (EVP_EncryptUpdate(ctx, p + NONCE_LEN, &outlen, plaintext, (int)len) != 1)
+    if (EVP_EncryptUpdate(ctx, p + IV_LEN, &outlen, plaintext, (int)len) != 1)
         { EVP_CIPHER_CTX_free(ctx); return -1; }
 
     int finlen;
-    if (EVP_EncryptFinal_ex(ctx, p + NONCE_LEN + outlen, &finlen) != 1)
+    if (EVP_EncryptFinal_ex(ctx, p + IV_LEN + outlen, &finlen) != 1)
         { EVP_CIPHER_CTX_free(ctx); return -1; }
     outlen += finlen;
-
-    /* Append tag */
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_GET_TAG, TAG_LEN,
-                            p + NONCE_LEN + outlen) != 1)
-        { EVP_CIPHER_CTX_free(ctx); return -1; }
-
     EVP_CIPHER_CTX_free(ctx);
-    return NONCE_LEN + outlen + TAG_LEN;
+
+    /* HMAC-SHA256 over IV + ciphertext */
+    qjson_hmac_sha256(p, IV_LEN + outlen, key32, 32, p + IV_LEN + outlen);
+
+    return IV_LEN + outlen + HMAC_LEN;
 }
 
 int qjson_aes_decrypt(const void *ciphertext, size_t len,
                       const void *key32, void *out) {
-    if (len < NONCE_LEN + TAG_LEN) return -1;
+    if (len < IV_LEN + HMAC_LEN + 16) return -1;  /* at least one block */
 
     const unsigned char *p = (const unsigned char *)ciphertext;
-    const unsigned char *nonce = p;
-    const unsigned char *ct = p + NONCE_LEN;
-    int ct_len = (int)(len - NONCE_LEN - TAG_LEN);
-    const unsigned char *tag = p + NONCE_LEN + ct_len;
+    int ct_len = (int)(len - IV_LEN - HMAC_LEN);
+    const unsigned char *iv = p;
+    const unsigned char *ct = p + IV_LEN;
+    const unsigned char *mac = p + IV_LEN + ct_len;
 
+    /* Verify HMAC first (encrypt-then-MAC) */
+    unsigned char expected[32];
+    qjson_hmac_sha256(p, IV_LEN + ct_len, key32, 32, expected);
+
+    /* Constant-time compare */
+    volatile unsigned char diff = 0;
+    for (int i = 0; i < HMAC_LEN; i++)
+        diff |= expected[i] ^ mac[i];
+    if (diff != 0) return -1;  /* auth failure */
+
+    /* AES-256-CBC decrypt */
     EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return -1;
 
-    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_gcm(), NULL, key32, nonce) != 1)
+    if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key32, iv) != 1)
         { EVP_CIPHER_CTX_free(ctx); return -1; }
 
     int outlen;
     if (EVP_DecryptUpdate(ctx, out, &outlen, ct, ct_len) != 1)
         { EVP_CIPHER_CTX_free(ctx); return -1; }
 
-    /* Set expected tag */
-    if (EVP_CIPHER_CTX_ctrl(ctx, EVP_CTRL_GCM_SET_TAG, TAG_LEN,
-                            (void *)tag) != 1)
-        { EVP_CIPHER_CTX_free(ctx); return -1; }
-
     int finlen;
-    int ret = EVP_DecryptFinal_ex(ctx, (unsigned char *)out + outlen, &finlen);
+    if (EVP_DecryptFinal_ex(ctx, (unsigned char *)out + outlen, &finlen) != 1)
+        { EVP_CIPHER_CTX_free(ctx); return -1; }
     EVP_CIPHER_CTX_free(ctx);
 
-    if (ret != 1) return -1;  /* auth failure */
     return outlen + finlen;
 }
 

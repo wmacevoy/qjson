@@ -1037,3 +1037,229 @@ BEGIN
     RETURN TRUE;
 END;
 $$ LANGUAGE plpgsql;
+
+-- ════════════════════════════════════════════════════════════
+-- Cryptographic functions (requires pgcrypto extension)
+-- Portable: same format as SQLite/LibreSSL qjson_crypto.c
+-- ════════════════════════════════════════════════════════════
+
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- ── SHA-256 ─────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION qjson_sha256(data BYTEA)
+RETURNS BYTEA AS $$
+    SELECT digest(data, 'sha256');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_sha256_hex(data BYTEA)
+RETURNS TEXT AS $$
+    SELECT encode(digest(data, 'sha256'), 'hex');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+-- text overloads
+CREATE OR REPLACE FUNCTION qjson_sha256(data TEXT)
+RETURNS BYTEA AS $$
+    SELECT digest(data::BYTEA, 'sha256');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_sha256_hex(data TEXT)
+RETURNS TEXT AS $$
+    SELECT encode(digest(data::BYTEA, 'sha256'), 'hex');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+-- ── HMAC-SHA256 ─────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION qjson_hmac(data BYTEA, key BYTEA)
+RETURNS BYTEA AS $$
+    SELECT hmac(data, key, 'sha256');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+-- ── Random bytes ────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION qjson_random(n INTEGER)
+RETURNS BYTEA AS $$
+    SELECT gen_random_bytes(n);
+$$ LANGUAGE sql VOLATILE STRICT;
+
+-- ── AES-256-CBC + HMAC-SHA256 (encrypt-then-MAC) ────────────
+-- Same wire format as C implementation:
+--   IV (16 bytes) || ciphertext (PKCS7 padded) || HMAC(IV||ct, key) (32 bytes)
+
+CREATE OR REPLACE FUNCTION qjson_encrypt(plaintext BYTEA, key32 BYTEA)
+RETURNS BYTEA AS $$
+DECLARE
+    iv BYTEA;
+    ct BYTEA;
+    mac BYTEA;
+BEGIN
+    IF octet_length(key32) != 32 THEN
+        RAISE EXCEPTION 'key must be 32 bytes';
+    END IF;
+    iv := gen_random_bytes(16);
+    ct := encrypt_iv(plaintext, key32, iv, 'aes-cbc/pad:pkcs');
+    mac := hmac(iv || ct, key32, 'sha256');
+    RETURN iv || ct || mac;
+END;
+$$ LANGUAGE plpgsql VOLATILE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_decrypt(ciphertext BYTEA, key32 BYTEA)
+RETURNS BYTEA AS $$
+DECLARE
+    total_len INTEGER;
+    ct_len INTEGER;
+    iv BYTEA;
+    ct BYTEA;
+    mac BYTEA;
+    expected BYTEA;
+BEGIN
+    IF octet_length(key32) != 32 THEN
+        RAISE EXCEPTION 'key must be 32 bytes';
+    END IF;
+    total_len := octet_length(ciphertext);
+    IF total_len < 64 THEN RETURN NULL; END IF;  -- IV + at least one block + HMAC
+    ct_len := total_len - 16 - 32;
+    iv := substring(ciphertext FROM 1 FOR 16);
+    ct := substring(ciphertext FROM 17 FOR ct_len);
+    mac := substring(ciphertext FROM 17 + ct_len FOR 32);
+    expected := hmac(iv || ct, key32, 'sha256');
+    IF mac != expected THEN RETURN NULL; END IF;  -- auth failure
+    RETURN decrypt_iv(ct, key32, iv, 'aes-cbc/pad:pkcs');
+EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+-- ── HKDF-SHA256 ─────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION qjson_hkdf(
+    ikm BYTEA, salt BYTEA, info BYTEA, out_len INTEGER
+) RETURNS BYTEA AS $$
+DECLARE
+    prk BYTEA;
+    t BYTEA := ''::BYTEA;
+    okm BYTEA := ''::BYTEA;
+    i INTEGER := 1;
+BEGIN
+    -- Extract
+    IF salt IS NULL OR octet_length(salt) = 0 THEN
+        prk := hmac(ikm, repeat(E'\\000', 32)::BYTEA, 'sha256');
+    ELSE
+        prk := hmac(ikm, salt, 'sha256');
+    END IF;
+    -- Expand
+    WHILE octet_length(okm) < out_len LOOP
+        t := hmac(t || COALESCE(info, ''::BYTEA) || chr(i)::BYTEA, prk, 'sha256');
+        okm := okm || t;
+        i := i + 1;
+    END LOOP;
+    RETURN substring(okm FROM 1 FOR out_len);
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+-- ── Base64 ──────────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION qjson_base64_encode(data BYTEA)
+RETURNS TEXT AS $$
+    SELECT encode(data, 'base64');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_base64_decode(b64 TEXT)
+RETURNS BYTEA AS $$
+    SELECT decode(b64, 'base64');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_base64url_encode(data BYTEA)
+RETURNS TEXT AS $$
+    SELECT rtrim(replace(replace(encode(data, 'base64'), '+', '-'), '/', '_'), '=');
+$$ LANGUAGE sql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_base64url_decode(b64 TEXT)
+RETURNS BYTEA AS $$
+DECLARE
+    padded TEXT;
+BEGIN
+    padded := replace(replace(b64, '-', '+'), '_', '/');
+    -- Add padding
+    CASE length(padded) % 4
+        WHEN 2 THEN padded := padded || '==';
+        WHEN 3 THEN padded := padded || '=';
+        ELSE NULL;
+    END CASE;
+    RETURN decode(padded, 'base64');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+-- ── JWT HS256 ───────────────────────────────────────────────
+
+CREATE OR REPLACE FUNCTION qjson_jwt_sign(payload TEXT, secret BYTEA)
+RETURNS TEXT AS $$
+DECLARE
+    hdr TEXT;
+    signing_input TEXT;
+    sig TEXT;
+BEGIN
+    hdr := qjson_base64url_encode('{"alg":"HS256","typ":"JWT"}'::BYTEA);
+    signing_input := hdr || '.' || qjson_base64url_encode(payload::BYTEA);
+    sig := qjson_base64url_encode(hmac(signing_input::BYTEA, secret, 'sha256'));
+    RETURN signing_input || '.' || sig;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+CREATE OR REPLACE FUNCTION qjson_jwt_verify(jwt TEXT, secret BYTEA)
+RETURNS TEXT AS $$
+DECLARE
+    parts TEXT[];
+    signing_input TEXT;
+    expected TEXT;
+BEGIN
+    parts := string_to_array(jwt, '.');
+    IF array_length(parts, 1) != 3 THEN RETURN NULL; END IF;
+    signing_input := parts[1] || '.' || parts[2];
+    expected := qjson_base64url_encode(hmac(signing_input::BYTEA, secret, 'sha256'));
+    IF parts[3] != expected THEN RETURN NULL; END IF;
+    RETURN convert_from(qjson_base64url_decode(parts[2]), 'UTF8');
+END;
+$$ LANGUAGE plpgsql IMMUTABLE STRICT;
+
+-- ── Shamir secret sharing ───────────────────────────────────
+-- Uses PostgreSQL NUMERIC for arbitrary-precision modular arithmetic.
+-- Default prime: 2^132 - 347
+
+CREATE OR REPLACE FUNCTION qjson_shamir_split(
+    secret_hex TEXT, minimum INTEGER, shares INTEGER
+) RETURNS TEXT AS $$
+DECLARE
+    p NUMERIC := ('x' || 'ffffffffffffffffffffffffffffffea5')::BIT(136)::NUMERIC;
+    secret NUMERIC;
+    coeffs NUMERIC[];
+    x NUMERIC;
+    y NUMERIC;
+    result TEXT[];
+    rand_bytes BYTEA;
+    rand_hex TEXT;
+BEGIN
+    secret := ('x' || secret_hex)::BIT(256)::NUMERIC;
+    IF secret >= p THEN RAISE EXCEPTION 'secret must be < prime'; END IF;
+
+    -- Build polynomial: coeffs[1] = secret, coeffs[2..minimum] = random
+    coeffs[1] := secret;
+    FOR i IN 2..minimum LOOP
+        rand_bytes := gen_random_bytes(17);
+        rand_hex := encode(rand_bytes, 'hex');
+        coeffs[i] := ('x' || rand_hex)::BIT(136)::NUMERIC % p;
+    END LOOP;
+
+    -- Evaluate at x = 1..shares (Horner's method)
+    FOR s IN 1..shares LOOP
+        x := s;
+        y := 0;
+        FOR i IN REVERSE minimum..1 LOOP
+            y := (y * x + coeffs[i]) % p;
+        END LOOP;
+        result[s] := to_hex(y::BIGINT);  -- Note: limited to bigint range
+    END LOOP;
+
+    RETURN '["' || array_to_string(result, '","') || '"]';
+END;
+$$ LANGUAGE plpgsql VOLATILE;
