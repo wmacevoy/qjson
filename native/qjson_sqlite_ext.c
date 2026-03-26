@@ -2098,6 +2098,200 @@ static void sql_qjson_closure(sqlite3_context *ctx, int argc, sqlite3_value **ar
     sqlite3_result_text(ctx, result.buf, result.len, sqlite3_free);
 }
 
+/* ── Crypto SQL functions (requires LibreSSL) ──────────── */
+
+#ifdef QJSON_USE_CRYPTO
+#include "qjson_crypto.h"
+
+static void sql_sha256(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const void *data; int len;
+    if (sqlite3_value_type(argv[0]) == SQLITE_BLOB) {
+        data = sqlite3_value_blob(argv[0]);
+        len = sqlite3_value_bytes(argv[0]);
+    } else {
+        data = sqlite3_value_text(argv[0]);
+        len = sqlite3_value_bytes(argv[0]);
+    }
+    if (!data) { sqlite3_result_null(ctx); return; }
+    unsigned char hash[32];
+    qjson_sha256(data, len, hash);
+    sqlite3_result_blob(ctx, hash, 32, SQLITE_TRANSIENT);
+}
+
+static void sql_sha256_hex(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const void *data; int len;
+    if (sqlite3_value_type(argv[0]) == SQLITE_BLOB) {
+        data = sqlite3_value_blob(argv[0]);
+        len = sqlite3_value_bytes(argv[0]);
+    } else {
+        data = sqlite3_value_text(argv[0]);
+        len = sqlite3_value_bytes(argv[0]);
+    }
+    if (!data) { sqlite3_result_null(ctx); return; }
+    unsigned char hash[32];
+    qjson_sha256(data, len, hash);
+    char hex[65];
+    for (int i = 0; i < 32; i++) sprintf(hex + i*2, "%02x", hash[i]);
+    sqlite3_result_text(ctx, hex, 64, SQLITE_TRANSIENT);
+}
+
+static void sql_encrypt(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL || sqlite3_value_type(argv[1]) == SQLITE_NULL)
+        { sqlite3_result_null(ctx); return; }
+    const void *pt = sqlite3_value_blob(argv[0]);
+    int pt_len = sqlite3_value_bytes(argv[0]);
+    const void *key = sqlite3_value_blob(argv[1]);
+    int key_len = sqlite3_value_bytes(argv[1]);
+    if (key_len != 32) { sqlite3_result_error(ctx, "key must be 32 bytes", -1); return; }
+    void *out = sqlite3_malloc(pt_len + 28);
+    int r = qjson_aes_encrypt(pt, pt_len, key, out);
+    if (r < 0) { sqlite3_free(out); sqlite3_result_null(ctx); return; }
+    sqlite3_result_blob(ctx, out, r, sqlite3_free);
+}
+
+static void sql_decrypt(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL || sqlite3_value_type(argv[1]) == SQLITE_NULL)
+        { sqlite3_result_null(ctx); return; }
+    const void *ct = sqlite3_value_blob(argv[0]);
+    int ct_len = sqlite3_value_bytes(argv[0]);
+    const void *key = sqlite3_value_blob(argv[1]);
+    int key_len = sqlite3_value_bytes(argv[1]);
+    if (key_len != 32) { sqlite3_result_error(ctx, "key must be 32 bytes", -1); return; }
+    if (ct_len < 28) { sqlite3_result_null(ctx); return; }
+    void *out = sqlite3_malloc(ct_len);
+    int r = qjson_aes_decrypt(ct, ct_len, key, out);
+    if (r < 0) { sqlite3_free(out); sqlite3_result_null(ctx); return; }
+    sqlite3_result_blob(ctx, out, r, sqlite3_free);
+}
+
+static void sql_random_bytes(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    int n = sqlite3_value_int(argv[0]);
+    if (n <= 0 || n > 1024*1024) { sqlite3_result_null(ctx); return; }
+    void *buf = sqlite3_malloc(n);
+    qjson_random_bytes(buf, n);
+    sqlite3_result_blob(ctx, buf, n, sqlite3_free);
+}
+
+static void sql_hmac(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    if (sqlite3_value_type(argv[0]) == SQLITE_NULL || sqlite3_value_type(argv[1]) == SQLITE_NULL)
+        { sqlite3_result_null(ctx); return; }
+    const void *data = sqlite3_value_blob(argv[0]);
+    int data_len = sqlite3_value_bytes(argv[0]);
+    const void *key = sqlite3_value_blob(argv[1]);
+    int key_len = sqlite3_value_bytes(argv[1]);
+    unsigned char mac[32];
+    qjson_hmac_sha256(data, data_len, key, key_len, mac);
+    sqlite3_result_blob(ctx, mac, 32, SQLITE_TRANSIENT);
+}
+
+static void sql_hkdf(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const void *ikm = sqlite3_value_blob(argv[0]);
+    int ikm_len = sqlite3_value_bytes(argv[0]);
+    const void *salt = sqlite3_value_type(argv[1]) != SQLITE_NULL ? sqlite3_value_blob(argv[1]) : NULL;
+    int salt_len = sqlite3_value_type(argv[1]) != SQLITE_NULL ? sqlite3_value_bytes(argv[1]) : 0;
+    const void *info = sqlite3_value_type(argv[2]) != SQLITE_NULL ? sqlite3_value_blob(argv[2]) : NULL;
+    int info_len = sqlite3_value_type(argv[2]) != SQLITE_NULL ? sqlite3_value_bytes(argv[2]) : 0;
+    int out_len = sqlite3_value_int(argv[3]);
+    if (out_len <= 0 || out_len > 8160) { sqlite3_result_null(ctx); return; }
+    void *out = sqlite3_malloc(out_len);
+    qjson_hkdf(ikm, ikm_len, salt, salt_len, info, info_len, out, out_len);
+    sqlite3_result_blob(ctx, out, out_len, sqlite3_free);
+}
+
+static void sql_shamir_split(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const char *secret = (const char *)sqlite3_value_text(argv[0]);
+    int m = sqlite3_value_int(argv[1]);
+    int n = sqlite3_value_int(argv[2]);
+    if (!secret || m < 1 || n < m || n > 255) {
+        sqlite3_result_error(ctx, "shamir_split(secret_hex, M, N)", -1); return;
+    }
+    char **keys = sqlite3_malloc(sizeof(char*) * n);
+    if (qjson_shamir_split(secret, m, n, NULL, keys) != 0) {
+        sqlite3_free(keys);
+        sqlite3_result_error(ctx, "shamir split failed", -1); return;
+    }
+    /* Build QJSON array: ["share1","share2",...] */
+    dstr out; dstr_init(&out);
+    dstr_catc(&out, '[');
+    for (int i = 0; i < n; i++) {
+        if (i > 0) dstr_catc(&out, ',');
+        dstr_catc(&out, '"');
+        dstr_cat(&out, keys[i]);
+        dstr_catc(&out, '"');
+        free(keys[i]);
+    }
+    dstr_catc(&out, ']');
+    sqlite3_free(keys);
+    sqlite3_result_text(ctx, out.buf, out.len, sqlite3_free);
+}
+
+static void sql_shamir_recover(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    /* qjson_shamir_recover(indices_json, keys_json)
+       indices: [1, 3, 5]  keys: ["hex1", "hex2", "hex3"] */
+    (void)argc;
+    const char *idx_json = (const char *)sqlite3_value_text(argv[0]);
+    const char *keys_json = (const char *)sqlite3_value_text(argv[1]);
+    if (!idx_json || !keys_json) { sqlite3_result_null(ctx); return; }
+
+    /* Simple JSON array parsing for indices and keys */
+    int indices[256]; const char *keys[256]; char *key_bufs[256];
+    int count = 0;
+
+    /* Parse indices: [1, 3, 5] */
+    const char *p = idx_json;
+    while (*p && *p != '[') p++;
+    if (*p) p++;
+    while (*p && *p != ']' && count < 256) {
+        while (*p == ' ' || *p == ',') p++;
+        if (*p == ']') break;
+        indices[count] = atoi(p);
+        while (*p && *p != ',' && *p != ']') p++;
+        count++;
+    }
+
+    /* Parse keys: ["hex1", "hex2", ...] */
+    int kcount = 0;
+    p = keys_json;
+    while (*p && *p != '[') p++;
+    if (*p) p++;
+    while (*p && *p != ']' && kcount < count) {
+        while (*p == ' ' || *p == ',' || *p == '"') p++;
+        if (*p == ']') break;
+        const char *start = p;
+        while (*p && *p != '"') p++;
+        int len = (int)(p - start);
+        key_bufs[kcount] = sqlite3_malloc(len + 1);
+        memcpy(key_bufs[kcount], start, len);
+        key_bufs[kcount][len] = '\0';
+        keys[kcount] = key_bufs[kcount];
+        if (*p == '"') p++;
+        kcount++;
+    }
+
+    if (kcount != count || count == 0) {
+        for (int i = 0; i < kcount; i++) sqlite3_free(key_bufs[i]);
+        sqlite3_result_error(ctx, "indices and keys must have same length", -1);
+        return;
+    }
+
+    char out[256];
+    int r = qjson_shamir_recover(indices, keys, count, 0, NULL, out, sizeof(out));
+    for (int i = 0; i < kcount; i++) sqlite3_free(key_bufs[i]);
+
+    if (r != 0) { sqlite3_result_null(ctx); return; }
+    sqlite3_result_text(ctx, out, -1, SQLITE_TRANSIENT);
+}
+
+#endif /* QJSON_USE_CRYPTO */
+
 /* ── Extension entry point ──────────────────────────────── */
 
 #ifdef _WIN32
@@ -2168,6 +2362,18 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
 
     sqlite3_create_function(db, "qjson_closure", -1,
         SQLITE_UTF8, NULL, sql_qjson_closure, NULL, NULL);
+
+#ifdef QJSON_USE_CRYPTO
+    sqlite3_create_function(db, "qjson_sha256",     1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_sha256, NULL, NULL);
+    sqlite3_create_function(db, "qjson_sha256_hex", 1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_sha256_hex, NULL, NULL);
+    sqlite3_create_function(db, "qjson_encrypt",    2, SQLITE_UTF8, NULL, sql_encrypt, NULL, NULL);
+    sqlite3_create_function(db, "qjson_decrypt",    2, SQLITE_UTF8, NULL, sql_decrypt, NULL, NULL);
+    sqlite3_create_function(db, "qjson_random",     1, SQLITE_UTF8, NULL, sql_random_bytes, NULL, NULL);
+    sqlite3_create_function(db, "qjson_hmac",       2, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_hmac, NULL, NULL);
+    sqlite3_create_function(db, "qjson_hkdf",       4, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_hkdf, NULL, NULL);
+    sqlite3_create_function(db, "qjson_shamir_split",   3, SQLITE_UTF8, NULL, sql_shamir_split, NULL, NULL);
+    sqlite3_create_function(db, "qjson_shamir_recover", 2, SQLITE_UTF8, NULL, sql_shamir_recover, NULL, NULL);
+#endif
 
     /* Register qjson_select as eponymous table-valued function */
     sqlite3_create_module(db, "qjson_select", &qs_module, NULL);

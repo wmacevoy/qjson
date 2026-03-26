@@ -12,6 +12,7 @@ else
 endif
 
 SQLCIPHER_DIR ?= ../sqlcipher-libressl
+LIBRESSL_DIR ?= $(HOME)/libressl
 
 .PHONY: all clean test test-postgres
 
@@ -24,6 +25,11 @@ qjson_ext$(EXT_SUFFIX): native/qjson_sqlite_ext.c native/qjson.c $(LIBBF_SRC)
 # SQLCipher loadable extension (same code, linked against sqlcipher headers)
 qjson_ext_sqlcipher$(EXT_SUFFIX): native/qjson_sqlite_ext.c native/qjson.c $(LIBBF_SRC)
 	$(CC) $(CFLAGS) $(SHARED) -I$(SQLCIPHER_DIR)/src -o $@ $^ -lm
+
+# Extension with crypto functions (requires LibreSSL)
+qjson_ext_crypto$(EXT_SUFFIX): native/qjson_sqlite_ext.c native/qjson.c native/qjson_crypto.c $(LIBBF_SRC)
+	$(CC) $(CFLAGS) -DQJSON_USE_CRYPTO -I$(LIBRESSL_DIR)/include \
+		$(SHARED) -o $@ $^ $(LIBRESSL_DIR)/lib/libcrypto.a -lm
 
 # C test binary
 test_qjson: test/test_qjson.c native/qjson.c $(LIBBF_SRC)
