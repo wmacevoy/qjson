@@ -95,6 +95,7 @@ jobs:
 
   # ── Docker image ────────────────────────────────────────
   docker:
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -205,6 +206,7 @@ jobs:
 
   # ── Publish to PyPI ─────────────────────────────────────
   publish-pypi:
+    if: ${{ !contains(github.ref_name, '-') }}
     needs: [python]
     runs-on: ubuntu-latest
     environment: pypi
@@ -221,6 +223,7 @@ jobs:
 
   # ── Publish to npm ──────────────────────────────────────
   publish-npm:
+    if: ${{ !contains(github.ref_name, '-') }}
     needs: [npm]
     runs-on: ubuntu-latest
     steps:
@@ -237,6 +240,7 @@ jobs:
 
   # ── GitHub Release ──────────────────────────────────────
   release:
+    if: ${{ !contains(github.ref_name, '-') }}
     needs: [sqlite-ext, python, npm, docker, bundles, wasm]
     runs-on: ubuntu-latest
     steps:
