@@ -3,13 +3,13 @@
 Usage:
     from qjson import parse, stringify, BigInt, BigFloat, Blob, Unbound
     from qjson.sql import adapter
-    from qjson.query import select, update
+    from qjson.query import select, update, qjson_closure
 """
 
 import importlib.util as _ilu
 import os as _os
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 # Load src/qjson.py directly to avoid circular import with this package
 _src_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', 'src', 'qjson.py')
