@@ -359,17 +359,21 @@ def _decompose_to_constraints(lhs_node, rhs_node, conn, root_id, prefix, dialect
                 constraints.append(("SELECT qjson_solve_pow(%s, %s, %s)" % (P, P, P),
                                    (base_vid, exp_vid, result_vid)))
                 return result_vid
-            # For single-arg functions, use the 2-arg solve form:
-            # qjson_solve_exp(a, b) means exp(a) = b
-            # These aren't implemented yet as solve functions, so fall back
-            # to evaluating directly (forward only for now)
-            arg_vid = _node_to_vid(node.args[0]) if node.args else None
-            result_vid = _store_temp()
-            # TODO: qjson_solve_sin, qjson_solve_exp, etc.
-            # For now, store as a forward-only computation constraint
-            constraints.append(("SELECT qjson_solve_pow(%s, '1', %s)" % (P, P),
-                               (arg_vid, result_vid)))  # placeholder
-            return result_vid
+            # Unary functions: qjson_solve_F(a, b) means F(a) = b
+            fn_solve_map = {
+                'SQRT': 'qjson_solve_sqrt', 'EXP': 'qjson_solve_exp',
+                'LOG': 'qjson_solve_log', 'SIN': 'qjson_solve_sin',
+                'COS': 'qjson_solve_cos', 'TAN': 'qjson_solve_tan',
+                'ASIN': 'qjson_solve_asin', 'ACOS': 'qjson_solve_acos',
+                'ATAN': 'qjson_solve_atan',
+            }
+            solve_fn = fn_solve_map.get(node.name)
+            if solve_fn and node.args:
+                arg_vid = _node_to_vid(node.args[0])
+                result_vid = _store_temp()
+                constraints.append(("SELECT %s(%s, %s)" % (solve_fn, P, P),
+                                   (arg_vid, result_vid)))
+                return result_vid
 
         raise ValueError("Cannot decompose: %r" % node)
 

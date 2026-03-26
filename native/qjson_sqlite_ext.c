@@ -1370,6 +1370,132 @@ static void sql_solve_mul(sqlite3_context *c, int n, sqlite3_value **v) { _sql_s
 static void sql_solve_div(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_DIV); }
 static void sql_solve_pow(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve(c, n, v, SOLVE_POW); }
 
+/* ── Unary function solvers: qjson_solve_F(a, b) means F(a) = b ─── */
+/* a unknown → a = F_inv(b).  b unknown → b = F(a).  Both known → check. */
+
+enum {
+    USOLVE_SQRT, USOLVE_EXP, USOLVE_LOG,
+    USOLVE_SIN, USOLVE_COS, USOLVE_TAN,
+    USOLVE_ASIN, USOLVE_ACOS, USOLVE_ATAN
+};
+
+static void _bf_sqrt(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_sqrt(r, a, prec, BF_RNDN);
+}
+
+static void _bf_exp(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_exp(r, a, prec, BF_RNDN);
+}
+
+static void _bf_log(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_log(r, a, prec, BF_RNDN);
+}
+
+static void _bf_sin(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_sin(r, a, prec, BF_RNDN);
+}
+
+static void _bf_cos(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_cos(r, a, prec, BF_RNDN);
+}
+
+static void _bf_tan(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_tan(r, a, prec, BF_RNDN);
+}
+
+static void _bf_asin(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_asin(r, a, prec, BF_RNDN);
+}
+
+static void _bf_acos(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_acos(r, a, prec, BF_RNDN);
+}
+
+static void _bf_atan(bf_t *r, const bf_t *a, limb_t prec) {
+    bf_atan(r, a, prec, BF_RNDN);
+}
+
+typedef void (*bf_unary_fn)(bf_t *r, const bf_t *a, limb_t prec);
+
+/* Forward/inverse pairs for each function */
+static const struct {
+    bf_unary_fn forward;
+    bf_unary_fn inverse;
+} _unary_pairs[] = {
+    [USOLVE_SQRT] = { _bf_sqrt, NULL },    /* inv: a = b^2, handled specially */
+    [USOLVE_EXP]  = { _bf_exp,  _bf_log },
+    [USOLVE_LOG]  = { _bf_log,  _bf_exp },
+    [USOLVE_SIN]  = { _bf_sin,  _bf_asin },
+    [USOLVE_COS]  = { _bf_cos,  _bf_acos },
+    [USOLVE_TAN]  = { _bf_tan,  _bf_atan },
+    [USOLVE_ASIN] = { _bf_asin, _bf_sin },
+    [USOLVE_ACOS] = { _bf_acos, _bf_cos },
+    [USOLVE_ATAN] = { _bf_atan, _bf_tan },
+};
+
+static void _sql_solve_unary(sqlite3_context *ctx, int argc, sqlite3_value **argv, int op) {
+    /* qjson_solve_F(a, b [, prefix]) means F(a) = b */
+    sqlite3 *db = sqlite3_context_db_handle(ctx);
+    const char *prefix = (argc > 2 && sqlite3_value_type(argv[2]) == SQLITE_TEXT)
+        ? (const char *)sqlite3_value_text(argv[2]) : "qjson_";
+
+    bf_context_t bfctx;
+    bf_context_init(&bfctx, _math_realloc, NULL);
+
+    solve_arg args[2];
+    _solve_arg_load(&args[0], argv[0], db, prefix, &bfctx);
+    _solve_arg_load(&args[1], argv[1], db, prefix, &bfctx);
+
+    int n_unbound = args[0].is_unbound + args[1].is_unbound;
+
+    if (n_unbound >= 2) {
+        sqlite3_result_int(ctx, 3); /* underdetermined */
+    } else if (n_unbound == 1) {
+        bf_t result;
+        bf_init(&bfctx, &result);
+
+        if (args[1].is_unbound) {
+            /* b unknown: b = F(a) */
+            _unary_pairs[op].forward(&result, &args[0].val, QJSON_DEFAULT_PREC);
+        } else {
+            /* a unknown: a = F_inv(b) */
+            if (op == USOLVE_SQRT) {
+                /* sqrt inverse: a = b^2 */
+                bf_mul(&result, &args[1].val, &args[1].val, QJSON_DEFAULT_PREC, BF_RNDN);
+            } else {
+                _unary_pairs[op].inverse(&result, &args[1].val, QJSON_DEFAULT_PREC);
+            }
+        }
+
+        int target = args[0].is_unbound ? 0 : 1;
+        _solve_update(db, prefix, args[target].vid, &result, &bfctx);
+        bf_delete(&result);
+        sqlite3_result_int(ctx, 1); /* solved */
+    } else {
+        /* Both known: consistency check */
+        bf_t expected;
+        bf_init(&bfctx, &expected);
+        _unary_pairs[op].forward(&expected, &args[0].val, QJSON_DEFAULT_PREC);
+        int eq = (bf_cmp(&expected, &args[1].val) == 0) ? 2 : 0;
+        bf_delete(&expected);
+        sqlite3_result_int(ctx, eq);
+    }
+
+    _solve_arg_free(&args[0]);
+    _solve_arg_free(&args[1]);
+    bf_context_end(&bfctx);
+}
+
+static void sql_solve_sqrt(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve_unary(c, n, v, USOLVE_SQRT); }
+static void sql_solve_exp(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_solve_unary(c, n, v, USOLVE_EXP); }
+static void sql_solve_log(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_solve_unary(c, n, v, USOLVE_LOG); }
+static void sql_solve_sin(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_solve_unary(c, n, v, USOLVE_SIN); }
+static void sql_solve_cos(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_solve_unary(c, n, v, USOLVE_COS); }
+static void sql_solve_tan(sqlite3_context *c, int n, sqlite3_value **v)  { _sql_solve_unary(c, n, v, USOLVE_TAN); }
+static void sql_solve_asin(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve_unary(c, n, v, USOLVE_ASIN); }
+static void sql_solve_acos(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve_unary(c, n, v, USOLVE_ACOS); }
+static void sql_solve_atan(sqlite3_context *c, int n, sqlite3_value **v) { _sql_solve_unary(c, n, v, USOLVE_ATAN); }
+
 /* ── Expression parser + solver ─────────────────────────── */
 /*
  * qjson_solve(root_id, expr, [prefix])
@@ -1645,35 +1771,9 @@ static sqlite3_int64 _ast_to_vid(sqlite3 *db, const char *prefix,
     }
 
     if (node->kind == AST_FUNC) {
-        /* For now, functions like SQRT, LOG, EXP compile to a forward-only eval.
-           TODO: qjson_solve_exp, qjson_solve_log, etc. for bidirectional. */
-        sqlite3_int64 arg_vid = node->func.arg ?
-            _ast_to_vid(db, prefix, root_id, node->func.arg, sql_out, p1, p2, p3, nc, nc_cap) : 0;
-
-        /* Evaluate and store as literal */
-        char *eval_sql = NULL;
-        if (strcasecmp(node->func.name, "PI") == 0)
-            eval_sql = sqlite3_mprintf("SELECT qjson_pi()");
-        else if (arg_vid) {
-            char *fn_map = NULL;
-            if (strcasecmp(node->func.name, "SQRT") == 0) fn_map = "qjson_sqrt";
-            else if (strcasecmp(node->func.name, "EXP") == 0) fn_map = "qjson_exp";
-            else if (strcasecmp(node->func.name, "LOG") == 0) fn_map = "qjson_log";
-            else if (strcasecmp(node->func.name, "SIN") == 0) fn_map = "qjson_sin";
-            else if (strcasecmp(node->func.name, "COS") == 0) fn_map = "qjson_cos";
-            else if (strcasecmp(node->func.name, "TAN") == 0) fn_map = "qjson_tan";
-            else if (strcasecmp(node->func.name, "ATAN") == 0) fn_map = "qjson_atan";
-            else if (strcasecmp(node->func.name, "ASIN") == 0) fn_map = "qjson_asin";
-            else if (strcasecmp(node->func.name, "ACOS") == 0) fn_map = "qjson_acos";
-            if (fn_map) {
-                /* Get the arg value as text */
-                eval_sql = sqlite3_mprintf(
-                    "SELECT %s(COALESCE(n.str, CAST(n.lo AS TEXT))) FROM \"%snumber\" n WHERE n.value_id = %lld",
-                    fn_map, prefix, arg_vid);
-            }
-        }
-
-        if (eval_sql) {
+        /* PI() is a constant — evaluate and store as literal */
+        if (strcasecmp(node->func.name, "PI") == 0) {
+            char *eval_sql = sqlite3_mprintf("SELECT qjson_pi()");
             sqlite3_stmt *stmt = NULL;
             char *result = NULL;
             if (sqlite3_prepare_v2(db, eval_sql, -1, &stmt, NULL) == SQLITE_OK &&
@@ -1683,9 +1783,7 @@ static sqlite3_int64 _ast_to_vid(sqlite3 *db, const char *prefix,
             }
             if (stmt) sqlite3_finalize(stmt);
             sqlite3_free(eval_sql);
-
             if (result) {
-                /* Store result as number */
                 char *sql = sqlite3_mprintf("INSERT INTO \"%svalue\" (type) VALUES ('number')", prefix);
                 sqlite3_exec(db, sql, 0, 0, 0); sqlite3_free(sql);
                 sqlite3_int64 vid = sqlite3_last_insert_rowid(db);
@@ -1697,8 +1795,50 @@ static sqlite3_int64 _ast_to_vid(sqlite3 *db, const char *prefix,
                 sqlite3_free(result);
                 return vid;
             }
+            return 0;
         }
-        return 0;
+
+        /* Unary functions: create constraint qjson_solve_F(arg, result) */
+        sqlite3_int64 arg_vid = node->func.arg ?
+            _ast_to_vid(db, prefix, root_id, node->func.arg, sql_out, p1, p2, p3, nc, nc_cap) : 0;
+        if (!arg_vid) return 0;
+
+        /* Map function name to solver name */
+        const char *solve_name = NULL;
+        if (strcasecmp(node->func.name, "SQRT") == 0) solve_name = "qjson_solve_sqrt";
+        else if (strcasecmp(node->func.name, "EXP") == 0) solve_name = "qjson_solve_exp";
+        else if (strcasecmp(node->func.name, "LOG") == 0) solve_name = "qjson_solve_log";
+        else if (strcasecmp(node->func.name, "SIN") == 0) solve_name = "qjson_solve_sin";
+        else if (strcasecmp(node->func.name, "COS") == 0) solve_name = "qjson_solve_cos";
+        else if (strcasecmp(node->func.name, "TAN") == 0) solve_name = "qjson_solve_tan";
+        else if (strcasecmp(node->func.name, "ATAN") == 0) solve_name = "qjson_solve_atan";
+        else if (strcasecmp(node->func.name, "ASIN") == 0) solve_name = "qjson_solve_asin";
+        else if (strcasecmp(node->func.name, "ACOS") == 0) solve_name = "qjson_solve_acos";
+        if (!solve_name) return 0;
+
+        /* Create anonymous temp for result */
+        char *sql = sqlite3_mprintf("INSERT INTO \"%svalue\" (type) VALUES ('unbound')", prefix);
+        sqlite3_exec(db, sql, 0, 0, 0); sqlite3_free(sql);
+        sqlite3_int64 result_vid = sqlite3_last_insert_rowid(db);
+        double neg_inf = -1.0/0.0, pos_inf = 1.0/0.0;
+        sql = sqlite3_mprintf("INSERT INTO \"%snumber\" (value_id, lo, str, hi) VALUES (%lld, %f, '?', %f)",
+                               prefix, result_vid, neg_inf, pos_inf);
+        sqlite3_exec(db, sql, 0, 0, 0); sqlite3_free(sql);
+
+        /* Record 2-arg constraint: solve_F(arg, result) */
+        if (*nc >= *nc_cap) {
+            *nc_cap = (*nc_cap) ? (*nc_cap) * 2 : 32;
+            *p1 = sqlite3_realloc(*p1, *nc_cap * sizeof(sqlite3_int64));
+            *p2 = sqlite3_realloc(*p2, *nc_cap * sizeof(sqlite3_int64));
+            *p3 = sqlite3_realloc(*p3, *nc_cap * sizeof(sqlite3_int64));
+            *sql_out = sqlite3_realloc(*sql_out, *nc_cap * sizeof(char*));
+        }
+        (*sql_out)[*nc] = sqlite3_mprintf("%s", solve_name);
+        (*p1)[*nc] = arg_vid;
+        (*p2)[*nc] = result_vid;
+        (*p3)[*nc] = 0;  /* unused — 2-arg solver */
+        (*nc)++;
+        return result_vid;
     }
 
     return 0;
@@ -1793,8 +1933,13 @@ static void sql_qjson_solve(sqlite3_context *ctx, int argc, sqlite3_value **argv
         int progress = 0;
         for (int i = 0; i < nc; i++) {
             if (done[i]) continue;
-            char *sql = sqlite3_mprintf("SELECT %s(%lld, %lld, %lld)",
-                                         solve_fns[i], c_p1[i], c_p2[i], c_p3[i]);
+            char *sql;
+            if (c_p3[i] == 0)  /* 2-arg unary solver */
+                sql = sqlite3_mprintf("SELECT %s(%lld, %lld)",
+                                       solve_fns[i], c_p1[i], c_p2[i]);
+            else               /* 3-arg binary solver */
+                sql = sqlite3_mprintf("SELECT %s(%lld, %lld, %lld)",
+                                       solve_fns[i], c_p1[i], c_p2[i], c_p3[i]);
             sqlite3_stmt *stmt = NULL;
             int r = 3;
             if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK &&
@@ -2004,6 +2149,16 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
     sqlite3_create_function(db, "qjson_solve_mul", -1, SQLITE_UTF8, NULL, sql_solve_mul, NULL, NULL);
     sqlite3_create_function(db, "qjson_solve_div", -1, SQLITE_UTF8, NULL, sql_solve_div, NULL, NULL);
     sqlite3_create_function(db, "qjson_solve_pow", -1, SQLITE_UTF8, NULL, sql_solve_pow, NULL, NULL);
+    /* Unary: qjson_solve_F(a, b [, prefix]) means F(a) = b */
+    sqlite3_create_function(db, "qjson_solve_sqrt", -1, SQLITE_UTF8, NULL, sql_solve_sqrt, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_exp",  -1, SQLITE_UTF8, NULL, sql_solve_exp,  NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_log",  -1, SQLITE_UTF8, NULL, sql_solve_log,  NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_sin",  -1, SQLITE_UTF8, NULL, sql_solve_sin,  NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_cos",  -1, SQLITE_UTF8, NULL, sql_solve_cos,  NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_tan",  -1, SQLITE_UTF8, NULL, sql_solve_tan,  NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_asin", -1, SQLITE_UTF8, NULL, sql_solve_asin, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_acos", -1, SQLITE_UTF8, NULL, sql_solve_acos, NULL, NULL);
+    sqlite3_create_function(db, "qjson_solve_atan", -1, SQLITE_UTF8, NULL, sql_solve_atan, NULL, NULL);
     sqlite3_create_function(db, "qjson_solve", -1, SQLITE_UTF8, NULL, sql_qjson_solve, NULL, NULL);
 
     /* Projection: directed rounding via libbf */
