@@ -113,12 +113,12 @@ Handles cycles.</p>
 
 <div class="grid">
   <div class="card">
-    <h3>Built-in crypto</h3>
-    <p>SHA-256, AES-256-GCM, HMAC, HKDF, JWT, Shamir secret sharing. Field-level encryption. All via LibreSSL.</p>
+    <h3>Encrypted storage</h3>
+    <p>SQLCipher page-level encryption. WASM + OPFS for browser. Shamir key splitting in the app layer.</p>
   </div>
   <div class="card">
-    <h3>Encrypted storage</h3>
-    <p>SQLCipher page-level encryption. WASM + OPFS for browser. Shamir splits your key M-of-N.</p>
+    <h3>Crypto + JWT</h3>
+    <p>SHA-256, AES-CBC+HMAC, HKDF, Shamir, JWT HS256. Application layer via LibreSSL. Field-level encryption.</p>
   </div>
   <div class="card">
     <h3>Complex keys + sets</h3>

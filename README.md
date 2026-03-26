@@ -86,32 +86,6 @@ qjson_closure(conn, root, '.edge')
 `[K]` iterates both arrays and sets.  `qjson_closure` uses
 `WITH RECURSIVE` for fixpoint computation.  Handles cycles.
 
-## Built-in crypto
-
-With LibreSSL linked (SQLCipher build), 15 SQL functions:
-
-```sql
--- Hash and verify
-SELECT qjson_sha256('data');
-SELECT qjson_hmac('data', 'key');
-
--- Encrypt individual fields (AES-256-GCM)
-SELECT qjson_encrypt(ssn, key);
-SELECT qjson_decrypt(encrypted_ssn, key);
-
--- Key management
-SELECT qjson_random(32);                       -- crypto random key
-SELECT qjson_hkdf('password', 'salt', '', 32); -- derive from password
-SELECT qjson_shamir_split(secret_hex, 2, 3);   -- 2-of-3 threshold
-SELECT qjson_shamir_recover('[1,3]', keys);    -- recover from any 2
-
--- JWT
-SELECT qjson_jwt_sign('{"sub":"alice"}', secret);
-SELECT qjson_jwt_verify(jwt, secret);          -- payload or NULL
-```
-
-Also: `qjson_base64_encode/decode`, `qjson_base64url_encode/decode`.
-
 ## What else
 
 ```javascript

@@ -1065,7 +1065,7 @@ SQLite/SQLCipher extension but **not in PostgreSQL**, because:
 
 The application layer (wyatt) handles computation and projects
 results correctly via libbf before storing them.  **QJSON's
-database layer is storage + queries + comparison + crypto.
+database layer is storage + queries + comparison.
 Data does not move at this layer.**
 
 ## Arbitrary-precision arithmetic
@@ -1128,10 +1128,13 @@ SELECT qjson_closure(root_id, '.edge', 'qjson_');
 Uses `WITH RECURSIVE` + `UNION` for fixpoint computation.
 Handles cycles — `UNION` eliminates duplicates automatically.
 
-## Cryptographic functions
+## Cryptographic functions (application layer)
 
-Available when built with LibreSSL (`QJSON_USE_CRYPTO`).
-All use LibreSSL EVP APIs — no hand-rolled crypto.
+Available in the C library when built with LibreSSL
+(`QJSON_USE_CRYPTO`).  These are **application-layer**
+functions — they live in wyatt/qjq, not in the database.
+The database layer (SQLite + PostgreSQL) is identical and
+contains no crypto.  All use LibreSSL EVP APIs.
 
 ### Hashing and authentication
 
@@ -1204,20 +1207,21 @@ Signature comparison is constant-time.  Header is always
 
 ### Security notes
 
-- Crypto functions require LibreSSL — not available in the
-  plain SQLite extension (`qjson_ext`).  Use `qjson_ext_crypto`
-  or the SQLCipher build.
+- Crypto functions are application-layer (wyatt/qjq), not
+  database-layer.  The database stores and retrieves — it
+  does not encrypt or sign.
 - Keys should come from environment variables or key files,
   never command-line arguments (visible in `ps`).
 - `qjson_encrypt` provides field-level encryption on top of
   SQLCipher's page-level encryption — for column-specific
   sensitivity (SSN, API keys, etc.).
 
-## Constraint solver
+## Constraint solver (application layer)
 
 `qjson_solve(root_id, formula)` — store a document with one
 unknown (`?`), write the formula, the solver fills it in.
-One call, any direction.
+One call, any direction.  Available in the SQLite C extension
+(with libbf) and in wyatt.
 
 ```sql
 SELECT qjson_solve(root_id,
