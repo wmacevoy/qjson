@@ -245,20 +245,25 @@ static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
             const char *existing = sb_find_var(sb, steps[i].val);
             if (existing) {
                 cur.len = 0; cur.buf[0] = '\0';
-                dstr_catf(&cur, "%s.value_id", existing);
+                dstr_catf(&cur, "%s.dst_vid", existing);
             } else {
-                char a[32], ai[32];
-                snprintf(a, sizeof(a), "a_%d", sb->alias_num);
+                char k[32];
+                snprintf(k, sizeof(k), "k_%d", sb->alias_num);
                 sb->alias_num++;
-                snprintf(ai, sizeof(ai), "ai_%d", sb->alias_num);
                 dstr_catf(&sb->joins,
-                    " JOIN \"%sarray\" %s ON %s.value_id = %s"
-                    " JOIN \"%sarray_item\" %s ON %s.array_id = %s.id",
-                    sb->prefix, a, a, cur.buf,
-                    sb->prefix, ai, ai, a);
-                sb_add_var(sb, steps[i].val, ai);
+                    " JOIN ("
+                    "SELECT a.value_id AS src_vid, ai.value_id AS dst_vid"
+                    " FROM \"%sarray\" a JOIN \"%sarray_item\" ai ON ai.array_id = a.id"
+                    " UNION ALL"
+                    " SELECT o.value_id AS src_vid, oi.key_id AS dst_vid"
+                    " FROM \"%sobject\" o JOIN \"%sobject_item\" oi ON oi.object_id = o.id"
+                    ") %s ON %s.src_vid = %s",
+                    sb->prefix, sb->prefix,
+                    sb->prefix, sb->prefix,
+                    k, k, cur.buf);
+                sb_add_var(sb, steps[i].val, k);
                 cur.len = 0; cur.buf[0] = '\0';
-                dstr_catf(&cur, "%s.value_id", ai);
+                dstr_catf(&cur, "%s.dst_vid", k);
             }
 
         } else if (steps[i].type == STEP_ITER) {

@@ -140,19 +140,25 @@ class _QueryBuilder:
             elif step_type == _TOK_VAR:
                 # Variable binding: reuse alias if same variable
                 if step_val in self._var_aliases:
-                    ai = self._var_aliases[step_val]
-                    current_vid = "%s.value_id" % ai
+                    k = self._var_aliases[step_val]
+                    current_vid = "%s.dst_vid" % k
                 else:
-                    a = self._alias("a")
-                    ai = self._alias("ai")
+                    # UNION handles both arrays (element value_id)
+                    # and objects/sets (key_id)
+                    k = self._alias("k")
                     self._joins.append(
-                        'JOIN %s %s ON %s.value_id = %s' % (
-                            self._t("array"), a, a, current_vid))
-                    self._joins.append(
-                        'JOIN %s %s ON %s.array_id = %s.id' % (
-                            self._t("array_item"), ai, ai, a))
-                    self._var_aliases[step_val] = ai
-                    current_vid = "%s.value_id" % ai
+                        'JOIN ('
+                        'SELECT a.value_id AS src_vid, ai.value_id AS dst_vid'
+                        ' FROM %s a JOIN %s ai ON ai.array_id = a.id'
+                        ' UNION ALL'
+                        ' SELECT o.value_id AS src_vid, oi.key_id AS dst_vid'
+                        ' FROM %s o JOIN %s oi ON oi.object_id = o.id'
+                        ') %s ON %s.src_vid = %s' % (
+                            self._t("array"), self._t("array_item"),
+                            self._t("object"), self._t("object_item"),
+                            k, k, current_vid))
+                    self._var_aliases[step_val] = k
+                    current_vid = "%s.dst_vid" % k
 
             elif step_type == _TOK_ITER:
                 # Iterate all array elements
@@ -992,7 +998,7 @@ def qjson_select(conn, root_id, select_path, where_expr=None,
     # Build variable select columns AFTER where (captures all bindings)
     var_selects = []
     for var_name, ai_alias in builder._var_aliases.items():
-        var_selects.append("%s.idx AS %s" % (ai_alias, var_name))
+        var_selects.append("%s.dst_vid AS %s" % (ai_alias, var_name))
 
     # Assemble query
     select_cols = ["%s AS result_vid" % select_vid]

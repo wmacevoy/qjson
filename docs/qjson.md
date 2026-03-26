@@ -767,12 +767,32 @@ pure translation.
 |--------|---------|-----|
 | `.key` | object child by key | JOIN `object` + `object_item` + `string WHERE value = 'key'` |
 | `[n]` | array index | JOIN `array` + `array_item WHERE idx = n` |
-| `[K]` | variable binding | JOIN `array` + `array_item` (K binds to idx) |
+| `[K]` | variable binding | UNION: array element OR set member (K binds to value_id) |
 | `.[]` | all array elements | JOIN `array` + `array_item` (all rows) |
 
 Variables are uppercase identifiers.  A variable used in both
-the SELECT path and WHERE clause refers to the same array
-element — it becomes a shared table alias in the generated SQL.
+the SELECT path and WHERE clause refers to the same element —
+it becomes a shared table alias in the generated SQL.
+
+`[K]` works on both arrays and sets.  For arrays, K iterates
+elements.  For sets (objects with complex keys), K iterates
+keys.  `[K][0]`, `[K][1]` navigate into tuple structure:
+
+```python
+# Set of tuples (Datalog facts)
+parent = {[alice, bob], [bob, carol], [carol, dave]}
+
+# Iterate all facts
+qjson_select(conn, root, '.parent[K]')
+
+# Filter: parent(?, bob)
+qjson_select(conn, root, '.parent[K]',
+    where_expr='.parent[K][1] == "bob"')
+
+# Grandparent join
+qjson_select(conn, root, '.parent[K1][0]',
+    where_expr='.parent[K1][1] == .parent[K2][0]')
+```
 
 ### WHERE predicates
 

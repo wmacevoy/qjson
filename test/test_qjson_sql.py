@@ -421,6 +421,68 @@ def test_large_keys_and_deep_paths():
     print('  Large keys, deep paths, long values%s: OK' % ext_note)
 
 
+def test_set_iteration():
+    """Test [K] variable binding on sets (object keys) via Python query builder."""
+    import sqlite3 as _sqlite3
+    from qjson import parse
+    from qjson_query import qjson_select
+
+    conn = _sqlite3.connect(':memory:')
+    has_ext = False
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension('./qjson_ext')
+        has_ext = True
+    except Exception:
+        pass
+
+    a = qjson_sql_adapter(conn)
+    a['setup']()
+
+    # Set of tuples (Datalog facts)
+    root = a['store']({
+        'parent': parse('{[alice, bob], [bob, carol], [carol, dave]}')
+    })
+    a['commit']()
+
+    # 1. Iterate all set members
+    rows = qjson_select(conn, root, '.parent[K]', has_ext=has_ext)
+    assert len(rows) == 3, 'expected 3 set members, got %d' % len(rows)
+    vals = sorted([str(a['load'](r[0])) for r in rows])
+    assert "['alice', 'bob']" in vals
+    assert "['bob', 'carol']" in vals
+    assert "['carol', 'dave']" in vals
+
+    # 2. Filter: parent(?, bob) — key[1] == "bob"
+    rows = qjson_select(conn, root, '.parent[K]',
+        where_expr='.parent[K][1] == "bob"', has_ext=has_ext)
+    assert len(rows) == 1
+    v = a['load'](rows[0][0])
+    assert v == ['alice', 'bob']
+
+    # 3. Grandparent join: K1[1] == K2[0]
+    rows = qjson_select(conn, root, '.parent[K1][0]',
+        where_expr='.parent[K1][1] == .parent[K2][0]', has_ext=has_ext)
+    gps = sorted([a['load'](r[0]) for r in rows])
+    assert gps == ['alice', 'bob'], 'grandparents: %s' % gps
+
+    # 4. Array [K] still works
+    root2 = a['store']({'items': [10, 20, 30]})
+    a['commit']()
+    rows = qjson_select(conn, root2, '.items[K]', has_ext=has_ext)
+    assert len(rows) == 3
+
+    # 5. Mixed: array [K] with WHERE filter
+    rows = qjson_select(conn, root2, '.items[K]',
+        where_expr='.items[K] > 15', has_ext=has_ext)
+    vals = sorted([a['load'](r[0]) for r in rows])
+    assert vals == [20.0, 30.0], 'filtered array: %s' % vals
+
+    conn.close()
+    ext_note = ' (with Python translator)' if has_ext else ''
+    print('  Set iteration [K]%s: OK' % ext_note)
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -434,6 +496,7 @@ if __name__ == '__main__':
     test_sqlite_interval_storage()
     test_sqlite_custom_prefix()
     test_large_keys_and_deep_paths()
+    test_set_iteration()
 
     if '--postgres' in sys.argv:
         print('\nPostgreSQL tests:')
