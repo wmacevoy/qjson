@@ -3,17 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QJSON — JSON + exact numerics + SQL storage</title>
+<title>QJSON — JSON where 0.1 + 0.2 = 0.3</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
          color: #24292e; max-width: 800px; margin: 0 auto; padding: 2em 1em; }
-  h1 { font-size: 2em; margin-bottom: 0.3em; }
-  h1 span { color: #0969da; }
-  h2 { font-size: 1.3em; margin: 1.5em 0 0.5em; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
+  h1 { font-size: 2em; margin-bottom: 0.1em; }
+  h2 { font-size: 1.3em; margin: 1.8em 0 0.5em; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
   p, ul { margin-bottom: 1em; }
   ul { padding-left: 1.5em; }
-  li { margin-bottom: 0.3em; }
   a { color: #0969da; text-decoration: none; }
   a:hover { text-decoration: underline; }
   code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
@@ -21,88 +19,130 @@
   pre { background: #f6f8fa; padding: 1em; border-radius: 6px; overflow-x: auto;
         margin-bottom: 1em; font-size: 0.85em; line-height: 1.5; }
   pre code { background: none; padding: 0; }
-  .install { display: flex; gap: 1em; flex-wrap: wrap; }
+  .subtitle { color: #57606a; font-size: 1.1em; margin-bottom: 1.5em; }
+  .install { display: flex; gap: 1em; flex-wrap: wrap; margin: 1em 0; }
   .install code { font-size: 1em; padding: 0.4em 0.8em; }
+  .aside { background: #f0f7ff; border-left: 3px solid #0969da; padding: 0.8em 1em;
+           margin: 1em 0; border-radius: 0 4px 4px 0; font-size: 0.95em; }
   .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; margin: 1em 0; }
   .card { background: #f6f8fa; border-radius: 6px; padding: 1em; }
   .card h3 { font-size: 1em; margin-bottom: 0.3em; }
   .card p { font-size: 0.9em; margin-bottom: 0; color: #57606a; }
   footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #d0d7de;
            color: #57606a; font-size: 0.85em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9em; margin: 1em 0; }
+  td { padding: 0.3em 0.5em; }
 </style>
 </head>
 <body>
 
-<h1>QJSON<span>.</span></h1>
-<p>JSON superset with arbitrary-precision numerics, pattern matching, and SQL storage.</p>
+<h1>QJSON</h1>
+<p class="subtitle">JSON where <code>0.1 + 0.2 = 0.3</code></p>
 
 <div class="install">
   <code>pip install qjson</code>
   <code>npm install qjson</code>
 </div>
 
-<h2>What it adds</h2>
-<pre><code>{
-  price: 67432.50M,           // BigDecimal -- exact base-10
-  count: 9007199254740993N,   // BigInt -- beyond 2^53
-  query: ?X,                  // unbound -- matches anything
-  key: 0jSGVsbG8,             // blob (JS64 binary)
-  /* nested /* block */ comments */
+<h2>The problem</h2>
+
+<p>JSON numbers are IEEE 754 doubles. <code>0.1 + 0.2</code> gives
+<code>0.30000000000000004</code>. Financial data, sensor readings,
+scientific measurements — anything that needs decimal precision,
+JSON can't represent faithfully.</p>
+
+<h2>Three suffixes fix it</h2>
+
+<pre><code>67432.50M            // BigDecimal -- exact base-10 decimal
+9007199254740993N    // BigInt -- arbitrary-precision integer
+3.14159265358979L    // BigFloat -- arbitrary-precision binary float</code></pre>
+
+<p>No new syntax to learn. Valid JSON is valid QJSON.</p>
+
+<h2>The trick: indexed precision</h2>
+
+<p>Every number — even one with 300 digits — gets stored as a
+three-column interval: <code>[lo, str, hi]</code>.</p>
+
+<ul>
+<li><code>lo</code> = largest IEEE double &le; the exact value</li>
+<li><code>hi</code> = smallest IEEE double &ge; the exact value</li>
+<li><code>str</code> = exact decimal string (NULL when lo == hi)</li>
+</ul>
+
+<div class="aside">
+The SQL index works on the doubles. 99.999% of comparisons resolve
+from the index alone. The 0.001% that land in the overlap zone fall
+through to exact string comparison. <strong>Arbitrary precision at
+indexed speed.</strong>
+</div>
+
+<h2>Solve backwards</h2>
+
+<p>Store 3 of 4 values, leave one as <code>?</code>.
+The solver fills it in — in any direction:</p>
+
+<pre><code>present = 10000M, rate = 0.05M, periods = 10, future = ?
+  --> future = 16288.946267774414M
+
+present = ?, rate = 0.05M, periods = 10, future = 16288.95M
+  --> present = 10000.002290952...M</code></pre>
+
+<p>Works with SQRT, EXP, LOG, SIN, COS, TAN and their inverses.
+All arbitrary precision via <a href="https://bellard.org/libbf/">libbf</a>.</p>
+
+<h2>Datalog in JSON</h2>
+
+<pre><code>// Facts as sets of tuples
+{
+  parent: {[alice, bob], [bob, carol], [carol, dave]}
 }
 
-// Complex keys -- any value can be a key
-{42: "answer", [1, 2]: "pair"}
+// Grandparent join
+.parent[K1][1] == .parent[K2][0]
 
-// Set shorthand -- sugar for {a: true, b: true, ...}
-{alice, bob, carol}
+// Transitive closure
+qjson_closure(root, '.parent')
+// --> a->b, a->c, a->d, b->c, b->d, c->d</code></pre>
 
-// Datalog facts -- sets of tuples
-{[alice, bob], [bob, carol]}</code></pre>
+<p><code>[K]</code> iterates both arrays and sets. Bare identifiers
+are strings. <code>qjson_closure</code> uses <code>WITH RECURSIVE</code>.
+Handles cycles.</p>
 
-<p>Valid JSON is valid QJSON. No collisions.</p>
+<h2>What else</h2>
 
-<h2>Features</h2>
 <div class="grid">
   <div class="card">
-    <h3>Arbitrary-precision arithmetic</h3>
-    <p>17 SQL functions (add, mul, pow, sqrt, sin, ...) backed by libbf. Use M/L suffixes to avoid IEEE 754 rounding.</p>
+    <h3>Encrypted storage</h3>
+    <p>SQLCipher page-level encryption. WASM + OPFS for browser. One key, everything encrypted.</p>
   </div>
   <div class="card">
-    <h3>Interval projection</h3>
-    <p>[lo, str, hi] brackets every value. Indexed range queries with exact fallback.</p>
+    <h3>Complex keys</h3>
+    <p>Any value as object key. <code>{42: "answer"}</code>, <code>{[1,2]: "pair"}</code>.</p>
   </div>
   <div class="card">
-    <h3>Constraint solver</h3>
-    <p>Store 3 of 4 values, leave one as <code>?</code>. The solver fills it in via leaf folding.</p>
+    <h3>Binary blobs</h3>
+    <p><code>0jSGVsbG8</code> — JS64 encoding, identifier-safe, no escaping needed.</p>
   </div>
   <div class="card">
-    <h3>Transitive closure</h3>
-    <p><code>qjson_closure()</code> computes graph reachability via <code>WITH RECURSIVE</code>.</p>
-  </div>
-  <div class="card">
-    <h3>Complex keys + sets</h3>
-    <p>Any QJSON value as object key. <code>{a, b, c}</code> set shorthand for Datalog predicates.</p>
-  </div>
-  <div class="card">
-    <h3>Encryption at rest</h3>
-    <p>SQLCipher page-level encryption. WASM + OPFS for browser. Encrypted volumes for PostgreSQL.</p>
+    <h3>One extension</h3>
+    <p>Everything in a single SQLite extension. No server, no daemon, no JVM.</p>
   </div>
 </div>
 
 <h2>Get started</h2>
 <ul>
-  <li><a href="docs/tutorial.html">Interactive tutorial</a> (WASM playground)</li>
-  <li><a href="docs/qjson.md">Full documentation</a> (types, grammar, SQL, queries, solver)</li>
-  <li><a href="https://github.com/wmacevoy/qjson">GitHub repository</a></li>
+  <li><a href="docs/tutorial.html">Interactive tutorial</a> — runs in your browser via WASM</li>
+  <li><a href="docs/qjson.md">Full reference</a> — types, grammar, SQL schema, queries, solver</li>
+  <li><a href="https://github.com/wmacevoy/qjson">Source</a> — MIT licensed</li>
 </ul>
 
-<h2>Install</h2>
-<table style="width:100%; border-collapse:collapse; font-size:0.9em;">
-<tr><td style="padding:0.3em 0.5em;"><strong>Python</strong></td><td><code>pip install qjson</code></td></tr>
-<tr><td style="padding:0.3em 0.5em;"><strong>Node.js</strong></td><td><code>npm install qjson</code></td></tr>
-<tr><td style="padding:0.3em 0.5em;"><strong>PostgreSQL</strong></td><td><code>docker pull ghcr.io/wmacevoy/qjson-postgres</code></td></tr>
-<tr><td style="padding:0.3em 0.5em;"><strong>Browser</strong></td><td><a href="https://github.com/wmacevoy/qjson/releases">WASM release</a></td></tr>
-<tr><td style="padding:0.3em 0.5em;"><strong>C</strong></td><td><code>#include "qjson.h"</code></td></tr>
+<table>
+<tr><td><strong>Python</strong></td><td><code>pip install qjson</code></td></tr>
+<tr><td><strong>Node.js</strong></td><td><code>npm install qjson</code></td></tr>
+<tr><td><strong>PostgreSQL</strong></td><td><code>docker pull ghcr.io/wmacevoy/qjson-postgres</code></td></tr>
+<tr><td><strong>Browser</strong></td><td><a href="https://github.com/wmacevoy/qjson/releases">WASM release</a></td></tr>
+<tr><td><strong>C</strong></td><td><code>#include "qjson.h"</code></td></tr>
 </table>
 
 <footer>

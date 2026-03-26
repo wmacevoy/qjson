@@ -2,79 +2,103 @@
 
 [![Tests](https://github.com/wmacevoy/qjson/actions/workflows/test.yml/badge.svg)](https://github.com/wmacevoy/qjson/actions/workflows/test.yml)
 
-JSON superset with arbitrary-precision numerics (N/M/L), pattern matching, and SQL storage.
+A JSON superset where `0.1 + 0.2 = 0.3`.
 
 ```bash
 pip install qjson
 npm install qjson
 ```
 
-## Example: compound interest
+## The idea
 
-FV = PV × (1 + r)<sup>n</sup> — store 3 of 4 values, leave one
-as `?` (unbound).  The constraint solver fills it in.
+JSON numbers are IEEE 754 doubles.  `0.1 + 0.2` gives
+`0.30000000000000004`.  Financial data, sensor readings,
+anything that needs decimal precision — JSON can't represent
+it faithfully.
 
-```python
-from qjson import parse, Unbound, is_bound
-from qjson.sql import adapter
-from qjson.query import select
-from decimal import Decimal
-import sqlite3
+QJSON fixes this with **three suffixes**:
 
-conn = sqlite3.connect(':memory:')
-conn.enable_load_extension(True)
-conn.load_extension('./qjson_ext')
-
-db = adapter(conn)
-db['setup']()
-
-# Store with one unknown
-root = db['store']({
-    'present': Decimal('10000'), 'rate': Decimal('0.05'),
-    'periods': 10, 'future': Unbound('FV'),
-})
-db['commit']()
-
-# Query with arithmetic in WHERE
-results = select(conn, root, '.present',
-    where_expr='.present * POWER(1 + .rate, .periods) > 16000',
-    has_ext=True)
-# → returns row (10000 * 1.05^10 = 16288.95 > 16000)
+```javascript
+67432.50M            // BigDecimal — exact base-10 decimal
+9007199254740993N    // BigInt — arbitrary-precision integer
+3.14159265358979L    // BigFloat — arbitrary-precision binary float
 ```
 
-Arithmetic in WHERE expressions:
+No new syntax to learn.  Valid JSON is valid QJSON.
+
+## The trick
+
+Every QJSON number — even one with 300 digits — gets stored as
+a **three-column interval**: `[lo, str, hi]`.
+
+- `lo` = largest IEEE double ≤ the exact value
+- `hi` = smallest IEEE double ≥ the exact value
+- `str` = the exact decimal string (NULL when `lo == hi`)
+
+The SQL index works on the doubles. 99.999% of comparisons
+resolve from the index alone.  The 0.001% that land in the
+overlap zone fall through to exact string comparison.
+
+**Arbitrary precision at indexed speed.**
+
+## Solve backwards
+
+Store 3 of 4 values, leave one as `?`.  The solver fills it in:
+
 ```
-.future == .present * (1 + .rate) ** .periods
-.circumference == 2 * PI() * .radius
-SQRT(.area) > 10
+present = 10000M, rate = 0.05M, periods = 10, future = ?
+  → future = 16288.946267774414M
+
+present = ?, rate = 0.05M, periods = 10, future = 16288.95M
+  → present = 10000.002290952...M
 ```
 
-Functions: `POWER`, `SQRT`, `EXP`, `LOG`, `SIN`, `COS`, `TAN`,
-`ATAN`, `ASIN`, `ACOS`, `PI`. Arbitrary precision via libbf.
+Same formula, any direction.  Works with SQRT, EXP, LOG,
+SIN, COS, TAN and their inverses — all arbitrary precision
+via [libbf](https://bellard.org/libbf/).
 
-## What QJSON adds to JSON
+## Datalog in JSON
+
+Sets are objects where all values are `true`:
 
 ```javascript
 {
-  price: 67432.50M,        // BigDecimal — exact base-10
-  count: 9007199254740993N, // BigInt — beyond 2^53
-  pi: 3.14159265358979L,   // BigFloat — arbitrary precision
-  key: 0jSGVsbG8,          // blob (JS64 binary)
-  query: ?X,               // unbound — matches anything
-  /* nested /* block */ comments */
+  parent: {[alice, bob], [bob, carol], [carol, dave]},
+  edge:   {[a, b], [b, c], [c, d]}
 }
-
-// Complex keys — any value can be a key
-{42: "answer", [1, 2]: "pair"}
-
-// Set shorthand — sugar for {a: true, b: true, ...}
-{alice, bob, carol}
-
-// Datalog facts — sets of tuples
-{[alice, bob], [bob, carol]}
 ```
 
-Valid JSON is valid QJSON.
+Query with path expressions and variable bindings:
+
+```python
+# All parents
+qjson_select(conn, root, '.parent[K]')
+
+# Grandparent join: parent(X,Z) ∧ parent(Z,Y)
+qjson_select(conn, root, '.parent[K1][0]',
+    where_expr='.parent[K1][1] == .parent[K2][0]')
+
+# Transitive closure: all reachable pairs
+qjson_closure(conn, root, '.edge')
+# → a→b, a→c, a→d, b→c, b→d, c→d
+```
+
+`[K]` iterates both arrays and sets.  `qjson_closure` uses
+`WITH RECURSIVE` for fixpoint computation.  Handles cycles.
+
+## What else
+
+```javascript
+{
+  key: 0jSGVsbG8,          // blob (JS64 binary encoding)
+  query: ?X,               // unbound variable — matches anything
+  42: "answer",            // any value as object key
+  /* nested /* block */ comments */
+}
+```
+
+Bare identifiers are strings: `{name: alice}` is
+`{"name": "alice"}`.
 
 ## Install
 
@@ -86,18 +110,21 @@ Valid JSON is valid QJSON.
 | Browser | [WASM](examples/wasm/) | SQLCipher + OPFS |
 | C | `#include "qjson.h"` | link sqlcipher |
 
+## Docs
+
+- [Interactive tutorial](docs/tutorial.html) — WASM playground
+- [Full reference](docs/qjson.md) — types, grammar, SQL schema, queries, solver
+- [Graph closure example](examples/graph_closure.py) — Datalog-style reachability
+- [Relational query example](examples/relational_query.py) — cross-path joins
+
 ## Tests
 
 ```bash
 make test                                  # C + Python + SQLite
 python3 test/test_qjson_sql.py --postgres  # + PostgreSQL
 python3 examples/compound_interest.py      # solver demo
+python3 examples/graph_closure.py          # closure demo
 ```
-
-## Docs
-
-[docs/qjson.md](docs/qjson.md) — types, grammar, SQL schema,
-query language, exact arithmetic, constraint solver, encryption.
 
 ## License
 

@@ -21,11 +21,22 @@ test.describe('Landing page (index.html)', () => {
     await expect(docs).toBeVisible();
   });
 
+  test('tells the story', async ({ page }) => {
+    await page.goto('/');
+    // The problem
+    await expect(page.locator('text=0.30000000000000004')).toBeVisible();
+    // The trick
+    await expect(page.locator('text=indexed speed')).toBeVisible();
+    // Solve backwards
+    await expect(page.locator('text=Solve backwards')).toBeVisible();
+    // Datalog
+    await expect(page.locator('text=Datalog in JSON')).toBeVisible();
+  });
+
   test('shows feature cards', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('text=Arbitrary-precision arithmetic')).toBeVisible();
-    await expect(page.locator('text=Constraint solver')).toBeVisible();
-    await expect(page.locator('text=Transitive closure')).toBeVisible();
+    await expect(page.locator('.card >> text=Encrypted storage')).toBeVisible();
     await expect(page.locator('.card >> text=Complex keys')).toBeVisible();
+    await expect(page.locator('.card >> text=One extension')).toBeVisible();
   });
 });
