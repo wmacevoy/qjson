@@ -1111,6 +1111,91 @@ SELECT qjson_closure(root_id, '.edge', 'qjson_');
 Uses `WITH RECURSIVE` + `UNION` for fixpoint computation.
 Handles cycles — `UNION` eliminates duplicates automatically.
 
+## Cryptographic functions
+
+Available when built with LibreSSL (`QJSON_USE_CRYPTO`).
+All use LibreSSL EVP APIs — no hand-rolled crypto.
+
+### Hashing and authentication
+
+```sql
+qjson_sha256(data)              -- SHA-256 → 32-byte blob
+qjson_sha256_hex(data)          -- SHA-256 → 64-char hex string
+qjson_hmac(data, key)           -- HMAC-SHA256 → 32-byte blob
+```
+
+### Authenticated encryption (AES-256-GCM)
+
+```sql
+qjson_encrypt(plaintext, key32) -- → nonce‖ciphertext‖tag (one blob)
+qjson_decrypt(ciphertext, key32)-- → plaintext, or NULL on auth failure
+```
+
+Key must be exactly 32 bytes.  12-byte nonce auto-generated per call.
+16-byte authentication tag appended.  Total overhead: 28 bytes.
+
+Tampered ciphertext or wrong key returns NULL — never partial data.
+
+### Key management
+
+```sql
+qjson_random(n)                 -- n cryptographic random bytes
+qjson_hkdf(ikm, salt, info, n)  -- HKDF-SHA256 → n-byte derived key
+```
+
+### Shamir secret sharing
+
+M-of-N threshold scheme.  Split a secret into N shares where
+any M can recover it.  Uses libbf for modular arithmetic over
+a 132-bit prime field.
+
+```sql
+qjson_shamir_split(secret_hex, M, N)  -- → JSON array of N hex shares
+qjson_shamir_recover(indices, keys)   -- → recovered secret hex
+```
+
+Example: 2-of-3 split and recovery:
+
+```sql
+-- Split
+SELECT qjson_shamir_split('deadbeef', 2, 3);
+-- → ["share1hex", "share2hex", "share3hex"]
+
+-- Recover from shares 1 and 3
+SELECT qjson_shamir_recover('[1, 3]', '["share1hex", "share3hex"]');
+-- → "deadbeef"
+```
+
+### Base64
+
+```sql
+qjson_base64_encode(blob)       -- standard base64 with padding
+qjson_base64_decode(text)       -- standard base64 → blob
+qjson_base64url_encode(blob)    -- URL-safe, no padding
+qjson_base64url_decode(text)    -- URL-safe → blob
+```
+
+### JWT (HS256)
+
+```sql
+qjson_jwt_sign(payload_json, secret)  -- → "header.payload.signature"
+qjson_jwt_verify(jwt, secret)         -- → payload JSON, or NULL
+```
+
+Signature comparison is constant-time.  Header is always
+`{"alg":"HS256","typ":"JWT"}`.
+
+### Security notes
+
+- Crypto functions require LibreSSL — not available in the
+  plain SQLite extension (`qjson_ext`).  Use `qjson_ext_crypto`
+  or the SQLCipher build.
+- Keys should come from environment variables or key files,
+  never command-line arguments (visible in `ps`).
+- `qjson_encrypt` provides field-level encryption on top of
+  SQLCipher's page-level encryption — for column-specific
+  sensitivity (SSN, API keys, etc.).
+
 ## Constraint solver
 
 `qjson_solve(root_id, formula)` — store a document with one

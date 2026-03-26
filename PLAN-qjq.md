@@ -83,8 +83,12 @@ qjq [OPTIONS] [PATH]
 Input:
   stdin              QJSON text (default)
   --db FILE          persistent SQLCipher database
-  --key KEY          encryption key
-  --key-file FILE    read key from file
+  --key-file FILE    read encryption key from file
+
+Keys (never CLI args — visible in ps):
+  QJSON_KEY          env var: encryption key
+  QJSON_KEY_FILE     env var: path to key file
+  --key-file FILE    arg: path to key file (same as env)
 
 Modes:
   (no path)          parse stdin, emit canonical QJSON

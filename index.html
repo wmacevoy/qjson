@@ -113,16 +113,16 @@ Handles cycles.</p>
 
 <div class="grid">
   <div class="card">
+    <h3>Built-in crypto</h3>
+    <p>SHA-256, AES-256-GCM, HMAC, HKDF, JWT, Shamir secret sharing. Field-level encryption. All via LibreSSL.</p>
+  </div>
+  <div class="card">
     <h3>Encrypted storage</h3>
-    <p>SQLCipher page-level encryption. WASM + OPFS for browser. One key, everything encrypted.</p>
+    <p>SQLCipher page-level encryption. WASM + OPFS for browser. Shamir splits your key M-of-N.</p>
   </div>
   <div class="card">
-    <h3>Complex keys</h3>
-    <p>Any value as object key. <code>{42: "answer"}</code>, <code>{[1,2]: "pair"}</code>.</p>
-  </div>
-  <div class="card">
-    <h3>Binary blobs</h3>
-    <p><code>0jSGVsbG8</code> — JS64 encoding, identifier-safe, no escaping needed.</p>
+    <h3>Complex keys + sets</h3>
+    <p>Any value as object key. <code>{alice, bob}</code> set shorthand. Datalog facts as tuples.</p>
   </div>
   <div class="card">
     <h3>One extension</h3>

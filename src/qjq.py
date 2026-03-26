@@ -145,10 +145,24 @@ def cmd_eval(args):
     conn.close()
 
 
+def _get_key(args):
+    """Get encryption key from env or file. Never from CLI args."""
+    key = os.environ.get('QJSON_KEY')
+    if key:
+        return key.encode() if len(key) != 32 else key
+    kf = os.environ.get('QJSON_KEY_FILE') or getattr(args, 'key_file', None)
+    if kf:
+        with open(kf, 'rb') as f:
+            return f.read(32)
+    return None
+
+
 def main():
     p = argparse.ArgumentParser(
         prog='qjq',
-        description='QJSON query tool — parse, query, solve, closure')
+        description='QJSON query tool — parse, query, solve, closure',
+        epilog='Keys: set QJSON_KEY or QJSON_KEY_FILE env var. '
+               'Never pass keys as CLI arguments.')
 
     p.add_argument('path', nargs='?',
                    help='jq-style path expression (e.g. .items[K])')
@@ -166,6 +180,10 @@ def main():
                    help='evaluate SQL expression')
     p.add_argument('-i', '--indent', default=None,
                    help='indent width for pretty-printing')
+    p.add_argument('--db', default=None,
+                   help='persistent database file (default: :memory:)')
+    p.add_argument('--key-file', default=None,
+                   help='read encryption key from file (or set QJSON_KEY)')
 
     args = p.parse_args()
 

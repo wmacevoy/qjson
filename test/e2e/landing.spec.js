@@ -35,8 +35,8 @@ test.describe('Landing page (index.html)', () => {
 
   test('shows feature cards', async ({ page }) => {
     await page.goto('/');
+    await expect(page.locator('.card >> text=Built-in crypto')).toBeVisible();
     await expect(page.locator('.card >> text=Encrypted storage')).toBeVisible();
-    await expect(page.locator('.card >> text=Complex keys')).toBeVisible();
     await expect(page.locator('.card >> text=One extension')).toBeVisible();
   });
 });

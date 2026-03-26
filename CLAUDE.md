@@ -64,6 +64,7 @@ Reconstruct: value_id → canonical QJSON text
 | `src/qjson_query.py` | Query translator (path → SQL compiler, SELECT + UPDATE) |
 | `native/qjson.h` / `native/qjson.c` | C: parse + stringify + project + cmp + is_json + is_bound |
 | `native/qjson_sqlite_ext.c` | SQLite extension: cmp, arithmetic, solver, reconstruct, select, closure |
+| `native/qjson_crypto.c` / `.h` | Crypto: SHA-256, AES-GCM, HMAC, HKDF, Shamir, JWT (LibreSSL) |
 | `native/libbf/` | Vendored libbf (exact directed rounding + arithmetic) |
 | `sql/qjson_pg.sql` | PostgreSQL: query translator + reconstruct + comparison |
 | `wasm/qjson_wasm_init.c` | WASM: auto-registers extension via sqlite3_auto_extension |
