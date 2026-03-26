@@ -34,7 +34,7 @@
 <body>
 
 <h1>QJSON<span>.</span></h1>
-<p>JSON superset with exact numerics, pattern matching, and SQL storage.</p>
+<p>JSON superset with arbitrary-precision numerics, pattern matching, and SQL storage.</p>
 
 <div class="install">
   <code>pip install qjson</code>
@@ -64,8 +64,8 @@
 <h2>Features</h2>
 <div class="grid">
   <div class="card">
-    <h3>Exact arithmetic</h3>
-    <p>17 SQL functions (add, mul, pow, sqrt, sin, ...) backed by libbf. No floating-point surprises.</p>
+    <h3>Arbitrary-precision arithmetic</h3>
+    <p>17 SQL functions (add, mul, pow, sqrt, sin, ...) backed by libbf. Use M/L suffixes to avoid IEEE 754 rounding.</p>
   </div>
   <div class="card">
     <h3>Interval projection</h3>

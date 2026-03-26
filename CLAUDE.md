@@ -2,7 +2,7 @@
 
 ## Project
 
-QJSON — JSON superset with exact numerics (N/M/L suffixes, 0j blobs,
+QJSON — JSON superset with arbitrary-precision numerics (N/M/L suffixes, 0j blobs,
 ? unbound variables) and interval-projected SQL storage.  Five layers:
 format, projection, SQL adapter, query translator, constraint solver.
 
@@ -110,7 +110,7 @@ qjson_cmp_lt(a_type, a_lo, a_str, a_len, a_hi,
 ```
 Unbound: same-name → equal; different-name or vs concrete → all return 1.
 
-**Exact arithmetic** (17 SQL functions, libbf-backed):
+**Arbitrary-precision arithmetic** (17 SQL functions, libbf-backed):
 `qjson_add`, `sub`, `mul`, `div`, `pow`, `neg`, `abs`, `sqrt`,
 `exp`, `log`, `sin`, `cos`, `tan`, `atan`, `asin`, `acos`, `pi`.
 All take/return TEXT decimal strings.

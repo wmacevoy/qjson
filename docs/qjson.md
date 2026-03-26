@@ -1,4 +1,4 @@
-# QJSON — JSON + exact numerics + binary blobs + comments
+# QJSON — JSON + arbitrary-precision numerics + sets + binary blobs + comments
 
 QJSON is a superset of JSON.  Every valid JSON document is valid
 QJSON.  The extensions add what JSON lacks for configuration,
@@ -1051,10 +1051,12 @@ Every Datalog rule (non-recursive horn clause) can be written as a
 QJSON query.  The array is the relation, `[K]` bindings are tuple
 iteration, and WHERE equalities are the join conditions.
 
-## Exact arithmetic
+## Arbitrary-precision arithmetic
 
-17 SQL functions backed by libbf (arbitrary precision).
-All take and return TEXT decimal strings.
+17 SQL functions backed by libbf.  All take and return TEXT
+decimal strings — no IEEE 754 rounding.  Plain JSON numbers
+(`3.14`) are still IEEE doubles; use M or L suffixes for
+arbitrary-precision results.
 
 | Function | Operation |
 |----------|-----------|
@@ -1131,7 +1133,9 @@ The solver:
 4. Each constraint uses inverse operations automatically
    (division for multiplication, logarithm for power, etc.)
 
-All arithmetic is exact via libbf (SQLite) or NUMERIC (PostgreSQL).
+Arithmetic on these functions is arbitrary-precision via libbf
+(SQLite) or NUMERIC (PostgreSQL).  No IEEE 754 rounding occurs
+when values stay in TEXT decimal representation.
 
 ### Example: compound interest
 

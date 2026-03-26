@@ -43,7 +43,7 @@
 <h1>QJSON Tutorial</h1>
 
 <p>Interactive tutorial — all code runs in your browser via
-SQLCipher WASM with exact arithmetic (libbf).</p>
+SQLCipher WASM with arbitrary-precision arithmetic (libbf).</p>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <h2>1. JSON — everything you know still works</h2>
@@ -64,9 +64,9 @@ Keys are sorted, whitespace removed — the canonical form is
 deterministic.</p>
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<h2>2. Exact numerics — no more floating-point surprises</h2>
+<h2>2. Arbitrary-precision numerics</h2>
 
-<h3>The problem</h3>
+<h3>The problem: IEEE 754 doubles</h3>
 
 <div class="playground" id="pg-float">
   <div class="playground-header">
@@ -77,22 +77,27 @@ deterministic.</p>
   <div class="output"></div>
 </div>
 
-<h3>The fix: BigDecimal (M suffix)</h3>
+<p>Plain JSON numbers are IEEE 754 doubles. <code>0.1 + 0.2</code>
+gives <code>0.30000000000000004</code>. That's not a bug — it's how
+binary floating-point works.</p>
+
+<h3>The fix: M and L suffixes</h3>
 
 <div class="playground" id="pg-exact">
   <div class="playground-header">
-    <span>QJSON SQL — exact arithmetic</span>
+    <span>QJSON SQL — arbitrary-precision arithmetic</span>
     <button onclick="runSQL('pg-exact')">Run ▶</button>
   </div>
   <textarea>SELECT qjson_add('0.1', '0.2')</textarea>
   <div class="output"></div>
 </div>
 
-<p>QJSON adds three exact numeric types:</p>
+<p>QJSON adds three arbitrary-precision numeric types.  Plain
+numbers (<code>3.14</code>) remain IEEE 754 doubles.</p>
 
-<pre><code>42N                  // BigInt — arbitrary precision integer
-67432.50M            // BigDecimal — exact base-10
-3.14159265358979L    // BigFloat — arbitrary precision float</code></pre>
+<pre><code>42N                  // BigInt — arbitrary-precision integer
+67432.50M            // BigDecimal — exact base-10 decimal
+3.14159265358979L    // BigFloat — arbitrary-precision binary float</code></pre>
 
 <p>Try storing exact values:</p>
 
@@ -114,7 +119,7 @@ deterministic.</p>
   <code>is_bound()</code> — true if no unbound variables.
 </div>
 
-<h3>Exact math in SQL</h3>
+<h3>Arbitrary-precision math in SQL</h3>
 
 <div class="playground" id="pg-math">
   <div class="playground-header">
@@ -129,7 +134,8 @@ deterministic.</p>
 <code>mul</code>, <code>div</code>, <code>pow</code>,
 <code>sqrt</code>, <code>exp</code>, <code>log</code>,
 <code>sin</code>, <code>cos</code>, <code>tan</code>,
-<code>pi</code>. All exact via libbf.</p>
+<code>pi</code>. All arbitrary-precision via libbf — no IEEE 754 rounding
+when values stay as decimal strings.</p>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 <h2>3. Unbound variables — pattern matching + solving</h2>
@@ -178,15 +184,61 @@ solves in any direction:</p>
   The formula <code>.future == .present * POWER(1 + .rate, .periods)</code>
   is decomposed into 3-term constraints. The solver uses inverse operations
   (division for multiplication, logarithm for power) automatically.
-  All arithmetic is exact — no floating-point errors.
+  All arithmetic uses libbf arbitrary-precision — no IEEE 754 rounding
+  when using M/L types and qjson_* functions.
 </div>
 
 <!-- ═══════════════════════════════════════════════════════ -->
-<h2>4. Queries</h2>
+<h2>4. Complex keys and sets</h2>
+
+<p>Object keys can be any QJSON value, not just strings:</p>
+
+<div class="playground" id="pg-keys">
+  <div class="playground-header">
+    <span>QJSON input — complex keys</span>
+    <button onclick="run('pg-keys')">Run ▶</button>
+  </div>
+  <textarea>{42: "answer", [1, 2]: "pair", "name": "alice"}</textarea>
+  <div class="output"></div>
+</div>
+
+<p>Set shorthand — <code>{a, b, c}</code> is sugar for
+<code>{a: true, b: true, c: true}</code>:</p>
+
+<div class="playground" id="pg-sets">
+  <div class="playground-header">
+    <span>QJSON input — sets</span>
+    <button onclick="run('pg-sets')">Run ▶</button>
+  </div>
+  <textarea>{alice, bob, carol}</textarea>
+  <div class="output"></div>
+</div>
+
+<p>Bare identifiers parse as strings anywhere a value is expected.
+Keywords (<code>true</code>, <code>false</code>, <code>null</code>)
+still work — <code>truthy</code> is the string "truthy", not the
+boolean <code>true</code>.</p>
+
+<h3>Sets of tuples (Datalog facts)</h3>
+
+<div class="playground" id="pg-tuples">
+  <div class="playground-header">
+    <span>QJSON input — Datalog-style facts</span>
+    <button onclick="run('pg-tuples')">Run ▶</button>
+  </div>
+  <textarea>{
+  "parent": {[alice, bob], [bob, carol], [carol, dave]},
+  "edge":   {[a, b], [b, c], [c, d]}
+}</textarea>
+  <div class="output"></div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════ -->
+<h2>5. Queries and arithmetic</h2>
 
 <div class="playground" id="pg-query">
   <div class="playground-header">
-    <span>SQL — query stored data</span>
+    <span>SQL — arbitrary-precision arithmetic</span>
     <button onclick="runSQL('pg-query')">Run ▶</button>
   </div>
   <textarea>SELECT qjson_add('0.1', '0.2'),
@@ -194,6 +246,25 @@ solves in any direction:</p>
        qjson_pow('2', '10'),
        qjson_div('1', '3', 50)</textarea>
   <div class="output"></div>
+</div>
+
+<h3>Transitive closure</h3>
+
+<p><code>qjson_closure(root_id, '.edge')</code> computes all reachable
+pairs from a set of 2-element tuples using <code>WITH RECURSIVE</code>:</p>
+
+<div class="playground" id="pg-closure">
+  <div class="playground-header">
+    <span>SQL — graph reachability</span>
+    <button onclick="runSQL('pg-closure')">Run ▶</button>
+  </div>
+  <textarea>SELECT qjson_closure(1, '.edge', 'qjson_')</textarea>
+  <div class="output"></div>
+</div>
+
+<div class="note">
+  <code>qjson_closure</code> requires data stored via section 4's
+  Datalog facts example.  Run that first, then try the closure query.
 </div>
 
 <p>Full documentation: <a href="qjson.md">docs/qjson.md</a></p>

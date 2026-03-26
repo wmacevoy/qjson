@@ -2,7 +2,7 @@
 
 [![Tests](https://github.com/wmacevoy/qjson/actions/workflows/test.yml/badge.svg)](https://github.com/wmacevoy/qjson/actions/workflows/test.yml)
 
-JSON superset with exact numerics, pattern matching, and SQL storage.
+JSON superset with arbitrary-precision numerics (N/M/L), pattern matching, and SQL storage.
 
 ```bash
 pip install qjson
@@ -50,7 +50,7 @@ SQRT(.area) > 10
 ```
 
 Functions: `POWER`, `SQRT`, `EXP`, `LOG`, `SIN`, `COS`, `TAN`,
-`ATAN`, `ASIN`, `ACOS`, `PI`. All exact via libbf.
+`ATAN`, `ASIN`, `ACOS`, `PI`. Arbitrary precision via libbf.
 
 ## What QJSON adds to JSON
 
