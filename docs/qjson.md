@@ -856,6 +856,111 @@ SELECT * FROM qjson_select(1,
 Key names and string values have no length limit — all
 allocations are dynamic.
 
+### Cross-path comparison (relational joins)
+
+WHERE predicates can compare two paths — not just path vs literal.
+Combined with multiple variable bindings, this gives full
+relational-join power over arrays stored as QJSON values.
+
+```
+path == path        type-aware equality (string, numeric, bool, null)
+path != path        type-aware inequality
+path < path         numeric ordering (both paths must resolve to numbers)
+path > path
+path <= path
+path >= path
+```
+
+**Type dispatch.** `path == path` checks that both values have the
+same type, then compares within that type:
+
+- **string**: SQL string equality on the `string` table
+- **numeric** (number, bigint, bigdec, bigfloat): exact comparison
+  via `qjson_decimal_cmp`
+- **boolean/null**: type column equality (true == true, null == null)
+- **mixed types**: never equal (number 1 != string "1")
+
+**Variable bindings as self-joins.** Each `[K]` variable creates an
+unconstrained JOIN to `array_item` — iterating all elements.  Two
+variables `[K1]`, `[K2]` on the same array create a cross product,
+filtered by the WHERE clause.  This is a SQL self-join.
+
+### Relational query examples
+
+**Grandparent (2-hop join).**  The Prolog clause
+`grandparent(GP, GC) :- parent(GP, Y), parent(Y, GC)` becomes:
+
+```python
+# Data
+root = store({'parent': [
+    {'name': 'Alice', 'child': 'Bob'},
+    {'name': 'Bob',   'child': 'Carol'},
+    {'name': 'Carol', 'child': 'Dave'},
+]})
+
+# Query: find all grandparents
+results = qjson_select(conn, root, '.parent[K1].name',
+    where_expr='.parent[K1].child == .parent[K2].name')
+# → Alice (grandparent of Carol, via Bob)
+# → Bob   (grandparent of Dave, via Carol)
+```
+
+Each `[K1]` and `[K2]` iterate independently over the `parent` array.
+The WHERE clause `.parent[K1].child == .parent[K2].name` acts as the
+equijoin condition — it only passes when K1's child equals K2's name.
+
+**Great-grandparent (3-hop).** Add a third binding:
+
+```python
+results = qjson_select(conn, root, '.parent[K1].name',
+    where_expr='.parent[K1].child == .parent[K2].name '
+               'AND .parent[K2].child == .parent[K3].name')
+# → Alice (great-grandparent of Dave)
+```
+
+**Mixed-type filtering.** Combine string, numeric, and boolean
+comparisons with AND/OR:
+
+```python
+results = qjson_select(conn, root, '.emp[K].name',
+    where_expr='.emp[K].dept == "eng" '
+               'AND .emp[K].salary > 100000 '
+               'AND .emp[K].active == true')
+```
+
+**Cross-path numeric comparison.** Find pairs in the same department
+where one earns more than another:
+
+```python
+results = qjson_select(conn, root, '.emp[K1].name',
+    where_expr='.emp[K1].dept == .emp[K2].dept '
+               'AND .emp[K1].salary > .emp[K2].salary')
+```
+
+**Arithmetic in cross-comparisons.** Expressions like
+`path * path > path` work — the arithmetic side is evaluated via
+libbf exact functions, then compared to the path's projected value:
+
+```python
+results = qjson_select(conn, root, '.order[K].item',
+    where_expr='.order[K].price * .order[K].qty > .order[K].budget')
+```
+
+### Horn clause equivalence
+
+| Prolog | QJSON query |
+|--------|-------------|
+| Body predicate `parent(X, Y)` | `.parent[K]` (variable-bound iteration) |
+| Shared variable `Y` | `WHERE .parent[K1].child == .parent[K2].name` |
+| Conjunction `,` | `AND` |
+| Disjunction `;` | `OR` |
+| Head `grandparent(GP, GC)` | SELECT path + result bindings |
+| CLP(R) constraints | `qjson_solve` arithmetic propagation |
+
+Every Datalog rule (non-recursive horn clause) can be written as a
+QJSON query.  The array is the relation, `[K]` bindings are tuple
+iteration, and WHERE equalities are the join conditions.
+
 ## Exact arithmetic
 
 17 SQL functions backed by libbf (arbitrary precision).

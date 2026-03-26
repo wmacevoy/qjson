@@ -385,6 +385,30 @@ def _decompose_to_constraints(lhs_node, rhs_node, conn, root_id, prefix, dialect
     return constraints
 
 
+class _ExprResult:
+    """Tagged expression result from the SQL builder.
+
+    kind:
+      'numeric'        — SQL expression evaluating to a TEXT decimal string
+      'path'           — resolved path with type info for cross-comparison
+      'string_literal' — a quoted string literal (e.g. '"hello"')
+      'type_literal'   — true, false, or null
+    """
+    __slots__ = ('kind', 'sql', 'vid_expr', 'type_expr',
+                 'num_str_expr', 'str_expr', 'n_alias', 'v_alias')
+
+    def __init__(self, kind, sql, vid_expr=None, type_expr=None,
+                 num_str_expr=None, str_expr=None, n_alias=None, v_alias=None):
+        self.kind = kind
+        self.sql = sql
+        self.vid_expr = vid_expr
+        self.type_expr = type_expr
+        self.num_str_expr = num_str_expr
+        self.str_expr = str_expr
+        self.n_alias = n_alias
+        self.v_alias = v_alias
+
+
 class _ExprCompiler:
     """Recursive-descent compiler: expressions → AST and SQL."""
 
@@ -462,8 +486,8 @@ class _ExprCompiler:
             return _Path(v)
         raise ValueError("Expected value, got %r" % (self.peek(),))
 
-    # ── SQL builders (return SQL strings) ────────────────────
-    # Each returns a SQL expression string that evaluates to a TEXT decimal.
+    # ── SQL builders ─────────────────────────────────────────
+    # expr/term/factor/atom return _ExprResult for type-aware comparison.
 
     def expr(self):
         """expr = term (('+' | '-') term)*"""
@@ -474,7 +498,7 @@ class _ExprCompiler:
                 break
             right = self.term()
             fn = 'qjson_add' if tok[1] == '+' else 'qjson_sub'
-            left = "%s(%s, %s)" % (fn, left, right)
+            left = _ExprResult('numeric', "%s(%s, %s)" % (fn, left.sql, right.sql))
         return left
 
     def term(self):
@@ -486,7 +510,7 @@ class _ExprCompiler:
                 break
             right = self.factor()
             fn = 'qjson_mul' if tok[1] == '*' else 'qjson_div'
-            left = "%s(%s, %s)" % (fn, left, right)
+            left = _ExprResult('numeric', "%s(%s, %s)" % (fn, left.sql, right.sql))
         return left
 
     def factor(self):
@@ -495,11 +519,11 @@ class _ExprCompiler:
         tok = self.eat('pow')
         if tok:
             right = self.atom()
-            left = "qjson_pow(%s, %s)" % (left, right)
+            left = _ExprResult('numeric', "qjson_pow(%s, %s)" % (left.sql, right.sql))
         return left
 
     def atom(self):
-        """atom = path | number | func(args) | '(' expr ')'"""
+        """atom = path | number | string | literal | func(args) | '(' expr ')'"""
         t, v = self.peek()
 
         # Function call: POWER(a,b), SQRT(a), etc.
@@ -526,7 +550,8 @@ class _ExprCompiler:
                     args.append(self.expr())
             if not self.eat('paren'):  # closing )
                 raise ValueError("Expected ')' after %s arguments" % fn_name)
-            return "%s(%s)" % (sql_fn, ', '.join(args))
+            return _ExprResult('numeric',
+                "%s(%s)" % (sql_fn, ', '.join(a.sql for a in args)))
 
         # Parenthesized expression
         if t == 'paren' and v == '(':
@@ -541,17 +566,27 @@ class _ExprCompiler:
             raw = v
             if raw and raw[-1] in 'NMLnml':
                 raw = raw[:-1]
-            return "'%s'" % raw
+            return _ExprResult('numeric', "'%s'" % raw)
+
+        if t == 'string':
+            self.pos += 1
+            # Strip quotes for the literal value
+            return _ExprResult('string_literal', v)
+
+        if t == 'literal':
+            self.pos += 1
+            return _ExprResult('type_literal', v)
 
         if t == 'path':
             self.pos += 1
-            return self._resolve_path_to_str(v)
+            return self._resolve_path(v)
 
         raise ValueError("Expected value, got %r" % (self.peek(),))
 
     def _resolve_path_to_str(self, path_expr):
         """Resolve a path to a SQL expression for the exact decimal value.
-        Uses COALESCE(n.str, CAST(n.lo AS TEXT)) to get the exact string."""
+        Uses COALESCE(n.str, CAST(n.lo AS TEXT)) to get the exact string.
+        Used for arithmetic expressions (number-only context)."""
         P = self.builder.P
         t_number = self.builder._t("number")
         path_steps = parse_path(path_expr)
@@ -561,32 +596,54 @@ class _ExprCompiler:
             'JOIN %s %s ON %s.value_id = %s' % (t_number, n, n, vid_expr))
         return "COALESCE(%s.str, CAST(%s.lo AS TEXT))" % (n, n)
 
+    def _resolve_path(self, path_expr):
+        """Resolve a path for comparison context.
+
+        Returns _ExprResult with kind='path' and metadata for type-aware
+        comparison: value_id expression, type alias, number alias (LEFT JOIN),
+        string alias (LEFT JOIN).
+        """
+        b = self.builder
+        P = b.P
+        path_steps = parse_path(path_expr)
+        vid_expr = b.resolve_path(path_steps, self.root_vid)
+
+        # Always JOIN to value table for type
+        v = b._alias("cv")
+        b._joins.append(
+            'JOIN %s %s ON %s.id = %s' % (b._t("value"), v, v, vid_expr))
+
+        # LEFT JOIN to number table
+        n = b._alias("cn")
+        b._joins.append(
+            'LEFT JOIN %s %s ON %s.value_id = %s' % (b._t("number"), n, n, vid_expr))
+
+        # LEFT JOIN to string table
+        s = b._alias("cs")
+        b._joins.append(
+            'LEFT JOIN %s %s ON %s.value_id = %s' % (b._t("string"), s, s, vid_expr))
+
+        num_sql = "COALESCE(%s.str, CAST(%s.lo AS TEXT))" % (n, n)
+
+        return _ExprResult('path', num_sql,
+                           vid_expr=vid_expr, type_expr="%s.type" % v,
+                           num_str_expr=num_sql, str_expr="%s.value" % s,
+                           n_alias=n, v_alias=v)
+
     # ── Predicate: expr cmp expr ────────────────────────────
 
     def comparison(self):
-        """predicate = expr cmp expr"""
-        left_sql = self.expr()
+        """predicate = expr cmp expr — type-aware dispatch."""
+        left = self.expr()
         tok = self.eat('cmp')
         if not tok:
             raise ValueError("Expected comparison operator, got %r" % (self.peek(),))
         op = tok[1]
-        right_sql = self.expr()
+        right = self.expr()
 
-        # All comparisons use qjson_decimal_cmp for exact decimal semantics
-        # (text comparison fails: '7' != '7.0')
-        if op == '==':
-            return "qjson_decimal_cmp(%s, %s) = 0" % (left_sql, right_sql)
-        elif op == '!=':
-            return "qjson_decimal_cmp(%s, %s) != 0" % (left_sql, right_sql)
-        elif op == '>':
-            return "qjson_decimal_cmp(%s, %s) > 0" % (left_sql, right_sql)
-        elif op == '>=':
-            return "qjson_decimal_cmp(%s, %s) >= 0" % (left_sql, right_sql)
-        elif op == '<':
-            return "qjson_decimal_cmp(%s, %s) < 0" % (left_sql, right_sql)
-        elif op == '<=':
-            return "qjson_decimal_cmp(%s, %s) <= 0" % (left_sql, right_sql)
+        return _compile_cross_comparison(left, op, right, self.builder, self.has_ext)
 
+    # Also handle 'string' and 'literal' tokens in predicates start set
     def predicates(self):
         """predicates = comparison (logic comparison)* | NOT predicates | ( predicates )"""
         parts = []
@@ -611,7 +668,7 @@ class _ExprCompiler:
                 except:
                     self.pos = save
                     parts.append(self.comparison())
-            elif t in ('path', 'number', 'paren'):
+            elif t in ('path', 'number', 'paren', 'string', 'literal', 'func'):
                 parts.append(self.comparison())
             else:
                 break
@@ -625,6 +682,134 @@ class _ExprCompiler:
                 break
 
         return ' '.join(parts)
+
+
+_NUM_TYPES = "('number','bigint','bigdec','bigfloat')"
+
+
+def _compile_cross_comparison(left, op, right, builder, has_ext):
+    """Type-aware comparison dispatch for two _ExprResult values.
+
+    Handles:
+      numeric vs numeric  — qjson_decimal_cmp
+      path vs path        — type-dispatched (string eq, numeric cmp, type match)
+      path vs literal     — type/string/numeric dispatch
+      path vs string_lit  — string table equality
+    """
+    P = builder.P
+    lk, rk = left.kind, right.kind
+
+    # ── Both numeric (arithmetic expressions or number literals) ──
+    if lk == 'numeric' and rk == 'numeric':
+        return _numeric_cmp(left.sql, right.sql, op)
+
+    # ── path vs path ──
+    if lk == 'path' and rk == 'path':
+        return _path_vs_path(left, op, right, P)
+
+    # ── path vs string literal ──
+    if lk == 'path' and rk == 'string_literal':
+        return _path_vs_string(left, op, right.sql, P)
+    if lk == 'string_literal' and rk == 'path':
+        return _path_vs_string(right, _flip_op(op), left.sql, P)
+
+    # ── path vs type literal (true/false/null) ──
+    if lk == 'path' and rk == 'type_literal':
+        return _path_vs_type(left, op, right.sql, P)
+    if lk == 'type_literal' and rk == 'path':
+        return _path_vs_type(right, _flip_op(op), left.sql, P)
+
+    # ── path vs numeric expression ──
+    if lk == 'path' and rk == 'numeric':
+        return _numeric_cmp(left.num_str_expr, right.sql, op)
+    if lk == 'numeric' and rk == 'path':
+        return _numeric_cmp(left.sql, right.num_str_expr, op)
+
+    # ── string literal vs string literal ──
+    if lk == 'string_literal' and rk == 'string_literal':
+        if op == '==':
+            return "%s = %s" % (left.sql, right.sql)
+        elif op == '!=':
+            return "%s != %s" % (left.sql, right.sql)
+
+    raise ValueError("Cannot compare %s %s %s" % (lk, op, rk))
+
+
+def _flip_op(op):
+    """Flip a comparison operator for swapped operands."""
+    return {'<': '>', '>': '<', '<=': '>=', '>=': '<=',
+            '==': '==', '!=': '!='}.get(op, op)
+
+
+def _numeric_cmp(left_sql, right_sql, op):
+    """Emit qjson_decimal_cmp for two numeric SQL expressions."""
+    _op_map = {'==': '= 0', '!=': '!= 0', '>': '> 0',
+               '>=': '>= 0', '<': '< 0', '<=': '<= 0'}
+    return "qjson_decimal_cmp(%s, %s) %s" % (left_sql, right_sql, _op_map[op])
+
+
+def _path_vs_path(left, op, right, P):
+    """Type-dispatched comparison of two resolved paths.
+
+    For == / !=: checks type match, then dispatches to string eq or numeric cmp.
+    For ordering: numeric only (both must be numeric types).
+    """
+    lt, rt = left.type_expr, right.type_expr
+    ln, rn = left.num_str_expr, right.num_str_expr
+    ls, rs = left.str_expr, right.str_expr
+
+    if op == '==':
+        return ("(%s = %s AND ("
+                "(%s IN %s AND qjson_decimal_cmp(%s, %s) = 0)"
+                " OR (%s = 'string' AND %s = %s)"
+                " OR (%s IN ('null','true','false'))"
+                "))" % (lt, rt,
+                        lt, _NUM_TYPES, ln, rn,
+                        lt, ls, rs,
+                        lt))
+    elif op == '!=':
+        return ("(%s != %s OR ("
+                "(%s IN %s AND qjson_decimal_cmp(%s, %s) != 0)"
+                " OR (%s = 'string' AND %s != %s)"
+                "))" % (lt, rt,
+                        lt, _NUM_TYPES, ln, rn,
+                        lt, ls, rs))
+    else:
+        # Ordering: numeric types only
+        return ("(%s IN %s AND %s IN %s AND qjson_decimal_cmp(%s, %s) %s)"
+                % (lt, _NUM_TYPES, rt, _NUM_TYPES,
+                   ln, rn, {'<': '< 0', '<=': '<= 0',
+                            '>': '> 0', '>=': '>= 0'}[op]))
+
+
+def _path_vs_string(path_result, op, str_literal_sql, P):
+    """Compare a resolved path against a string literal.
+
+    The string literal SQL is a quoted string like '"hello"'.
+    We strip the outer quotes for SQL comparison.
+    """
+    # Strip the JSON-style double quotes from the literal for SQL
+    # str_literal_sql is e.g. '"hello"' — we need 'hello' for SQL
+    inner = str_literal_sql[1:-1]  # strip outer quotes
+    st = path_result.str_expr
+    tt = path_result.type_expr
+    if op == '==':
+        return "(%s = 'string' AND %s = '%s')" % (tt, st, inner.replace("'", "''"))
+    elif op == '!=':
+        return "(%s != 'string' OR %s != '%s')" % (tt, st, inner.replace("'", "''"))
+    else:
+        raise ValueError("Cannot use %s with string comparison" % op)
+
+
+def _path_vs_type(path_result, op, type_literal, P):
+    """Compare a resolved path against true/false/null."""
+    tt = path_result.type_expr
+    if op == '==':
+        return "%s = '%s'" % (tt, type_literal)
+    elif op == '!=':
+        return "%s != '%s'" % (tt, type_literal)
+    else:
+        raise ValueError("Cannot use %s with %s" % (op, type_literal))
 
 
 def compile_where(where_expr, builder, root_vid_expr="root.id", has_ext=False):
@@ -795,17 +980,17 @@ def qjson_select(conn, root_id, select_path, where_expr=None,
     select_steps = parse_path(select_path)
     select_vid = builder.resolve_path(select_steps, "root.id")
 
-    # Build variable select columns
-    var_selects = []
-    for var_name, ai_alias in builder._var_aliases.items():
-        var_selects.append("%s.idx AS %s" % (ai_alias, var_name))
-
-    # Compile WHERE
+    # Compile WHERE (may introduce new variable bindings)
     where_sql = ""
     where_params = []
     if where_expr:
         where_sql, where_params = compile_where(
             where_expr, builder, "root.id", has_ext)
+
+    # Build variable select columns AFTER where (captures all bindings)
+    var_selects = []
+    for var_name, ai_alias in builder._var_aliases.items():
+        var_selects.append("%s.idx AS %s" % (ai_alias, var_name))
 
     # Assemble query
     select_cols = ["%s AS result_vid" % select_vid]
