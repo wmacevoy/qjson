@@ -44,16 +44,25 @@ make test
 ## Architecture
 
 ```
-Format:      parse/stringify QJSON text ↔ in-memory values
-Projection:  value → [lo, str, hi] IEEE double interval
-             roundDown/roundUp — identical across C, JS, Python
-Comparison:  qjson_cmp_lt/le/eq/ne/gt/ge (6 functions, returns 0/1)
-Arithmetic:  qjson_add/sub/mul/div/pow + transcendentals (libbf exact)
-Solver:      qjson_solve_add/sub/mul/div/pow (3-term constraint propagation)
-SQL adapter: normalized 8-table schema — store/load/remove any QJSON value
-Query:       jq-like path expressions → SQL JOIN chains (pure translation)
-Reconstruct: value_id → canonical QJSON text
+Database layer (SQLite + PostgreSQL — identical):
+  Format:      parse/stringify QJSON text ↔ in-memory values
+  Projection:  value → [lo, str, hi] IEEE double interval
+  Comparison:  qjson_cmp_lt/le/eq/ne/gt/ge (6 functions, returns 0/1)
+  SQL adapter: normalized 8-table schema — store/load/remove any QJSON value
+  Query:       jq-like path expressions → SQL JOIN chains (pure translation)
+  Reconstruct: value_id → canonical QJSON text
+  Crypto:      SHA-256, AES-CBC+HMAC, HKDF, JWT, base64 (portable)
+
+Compute layer (SQLite/libbf only — wyatt handles for PG):
+  Arithmetic:  qjson_add/sub/mul/div/pow + transcendentals (libbf)
+  Solver:      14 bidirectional solvers (3-term constraint propagation)
+  Closure:     qjson_closure (WITH RECURSIVE transitive closure)
+  Projection:  roundDown/roundUp — requires libbf directed rounding
 ```
+
+Data does not move at the database layer.  The compute layer
+(arithmetic, solver, closure) requires libbf for directed rounding
+and lives in the application (wyatt) for PostgreSQL.
 
 ### Source modules
 

@@ -1051,12 +1051,29 @@ Every Datalog rule (non-recursive horn clause) can be written as a
 QJSON query.  The array is the relation, `[K]` bindings are tuple
 iteration, and WHERE equalities are the join conditions.
 
+## Compute layer (SQLite only)
+
+The following functions require libbf for directed rounding
+and arbitrary-precision arithmetic.  They are available in the
+SQLite/SQLCipher extension but **not in PostgreSQL**, because:
+
+1. libbf cannot run inside hosted PostgreSQL (no C extensions)
+2. Solved values must be projected to `[lo, str, hi]` intervals
+   with directed rounding (`round_down`, `round_up`)
+3. PostgreSQL's `CAST` to `DOUBLE PRECISION` uses round-to-nearest
+   — a bracket off by one ULP breaks comparison correctness
+
+The application layer (wyatt) handles computation and projects
+results correctly via libbf before storing them.  **QJSON's
+database layer is storage + queries + comparison + crypto.
+Data does not move at this layer.**
+
 ## Arbitrary-precision arithmetic
 
-17 SQL functions backed by libbf.  All take and return TEXT
-decimal strings — no IEEE 754 rounding.  Plain JSON numbers
-(`3.14`) are still IEEE doubles; use M or L suffixes for
-arbitrary-precision results.
+SQLite/SQLCipher only.  17 SQL functions backed by libbf.
+All take and return TEXT decimal strings — no IEEE 754
+rounding.  Plain JSON numbers (`3.14`) are still IEEE doubles;
+use M or L suffixes for arbitrary-precision results.
 
 | Function | Operation |
 |----------|-----------|
