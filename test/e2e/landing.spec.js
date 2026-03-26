@@ -23,7 +23,7 @@ test.describe('Landing page (index.html)', () => {
 
   test('shows feature cards', async ({ page }) => {
     await page.goto('/');
-    await expect(page.locator('text=Exact arithmetic')).toBeVisible();
+    await expect(page.locator('text=Arbitrary-precision arithmetic')).toBeVisible();
     await expect(page.locator('text=Constraint solver')).toBeVisible();
     await expect(page.locator('text=Transitive closure')).toBeVisible();
     await expect(page.locator('.card >> text=Complex keys')).toBeVisible();
