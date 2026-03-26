@@ -137,6 +137,63 @@ class BigFloat:
         return hash(("BigFloat", self._raw))
 
 
+class QMap:
+    """Ordered map with any QJSON values as keys.
+
+    Used when at least one key is not a string.  For all-string keys,
+    the parser returns a regular dict for backward compatibility.
+    """
+    __slots__ = ("entries",)
+
+    def __init__(self, entries=None):
+        self.entries = list(entries) if entries else []
+
+    def __len__(self):
+        return len(self.entries)
+
+    def __bool__(self):
+        return len(self.entries) > 0
+
+    def __eq__(self, other):
+        if isinstance(other, QMap):
+            return self.entries == other.entries
+        if isinstance(other, dict):
+            if len(self.entries) != len(other):
+                return False
+            for k, v in self.entries:
+                if not isinstance(k, str) or k not in other or other[k] != v:
+                    return False
+            return True
+        return NotImplemented
+
+    def __repr__(self):
+        return "QMap(%r)" % self.entries
+
+    def items(self):
+        return iter(self.entries)
+
+    def values(self):
+        return [v for _, v in self.entries]
+
+    def keys(self):
+        return [k for k, _ in self.entries]
+
+    def __getitem__(self, key):
+        for k, v in self.entries:
+            if k == key:
+                return v
+        raise KeyError(key)
+
+    def __contains__(self, key):
+        for k, _ in self.entries:
+            if k == key:
+                return True
+        return False
+
+    def __iter__(self):
+        return iter(k for k, _ in self.entries)
+
+
 class Unbound:
     """Unbound variable.  Round-trips with '?' prefix.
 
@@ -166,7 +223,7 @@ class Unbound:
 # ── Type predicates ──────────────────────────────────────────
 
 def is_json(value):
-    """True if value contains only standard JSON types (no BigInt/BigDecimal/BigFloat/Blob/Unbound).
+    """True if value contains only standard JSON types (no BigInt/BigDecimal/BigFloat/Blob/Unbound/QMap-with-complex-keys).
     Recursive for arrays and objects."""
     if value is None or isinstance(value, bool):
         return True
@@ -176,6 +233,8 @@ def is_json(value):
         return True
     if isinstance(value, (list, tuple)):
         return all(is_json(item) for item in value)
+    if isinstance(value, QMap):
+        return all(isinstance(k, str) and is_json(v) for k, v in value.entries)
     if isinstance(value, dict):
         return all(is_json(v) for v in value.values())
     return False
@@ -187,6 +246,8 @@ def is_bound(value):
         return False
     if isinstance(value, (list, tuple)):
         return all(is_bound(item) for item in value)
+    if isinstance(value, QMap):
+        return all(is_bound(k) and is_bound(v) for k, v in value.entries)
     if isinstance(value, dict):
         return all(is_bound(v) for v in value.values())
     return True
@@ -251,7 +312,7 @@ class _Parser:
         self.pos += 1
 
     def ident(self):
-        """Parse an unquoted key (JS identifier)."""
+        """Parse an unquoted identifier → string."""
         start = self.pos
         c = self.ch()
         if not (c.isalpha() or c == "_" or c == "$"):
@@ -265,11 +326,16 @@ class _Parser:
                 break
         return self.text[start:self.pos]
 
-    def key(self):
-        """Parse a key: quoted string or bare identifier."""
-        if self.ch() == '"':
-            return self.string()
-        return self.ident()
+    def _is_keyword(self, word):
+        """Check if text at current position is exactly word, not part of a longer identifier."""
+        end = self.pos + len(word)
+        if self.text[self.pos:end] != word:
+            return False
+        if end < self.end:
+            nc = self.text[end]
+            if nc.isalnum() or nc == '_' or nc == '$':
+                return False
+        return True
 
     def value(self):
         self.ws()
@@ -277,9 +343,11 @@ class _Parser:
         if c == '"':  return self.string()
         if c == "{":  return self.obj()
         if c == "[":  return self.arr()
-        if c == "t":  return self.literal("true", True)
-        if c == "f":  return self.literal("false", False)
-        if c == "n" and self.text[self.pos:self.pos + 4] == "null":
+        if c == "t" and self._is_keyword("true"):
+            return self.literal("true", True)
+        if c == "f" and self._is_keyword("false"):
+            return self.literal("false", False)
+        if c == "n" and self._is_keyword("null"):
             return self.literal("null", None)
         if c == "0" and self.pos + 1 < self.end and self.text[self.pos + 1] in "jJ":
             return self.blob()
@@ -287,6 +355,8 @@ class _Parser:
             return self.number()
         if c == "?":
             return self.unbound()
+        if c.isalpha() or c == "_" or c == "$":
+            return self.ident()
         raise ValueError("Unexpected '%s' at %d" % (c, self.pos))
 
     def literal(self, word, val):
@@ -387,26 +457,36 @@ class _Parser:
 
     def obj(self):
         self.expect("{")
-        d = {}
+        entries = []
         self.ws()
         if self.ch() == "}":
             self.pos += 1
-            return d
+            return {}
         while True:
             self.ws()
-            k = self.key()
+            k = self.value()
             self.ws()
-            self.expect(":")
-            d[k] = self.value()
+            if self.ch() == ":":
+                self.pos += 1
+                v = self.value()
+            else:
+                v = True  # set shorthand
+            entries.append((k, v))
             self.ws()
             if self.ch() == "}":
                 self.pos += 1
-                return d
+                break
             self.expect(",")
             self.ws()
             if self.ch() == "}":  # trailing comma
                 self.pos += 1
-                return d
+                break
+        if all(isinstance(k, str) for k, _ in entries):
+            d = {}
+            for k, v in entries:
+                d[k] = v
+            return d
+        return QMap(entries)
 
     def arr(self):
         self.expect("[")
@@ -433,6 +513,28 @@ class _Parser:
 def stringify(obj, indent=None):
     """Serialize to QJSON.  BigInt → 'n', Decimal → 'm', BigFloat → 'l'."""
     return _fmt(obj, indent, 0)
+
+
+def _is_bare_ident(s):
+    """Check if string can be emitted as a bare identifier."""
+    if not s:
+        return False
+    c = s[0]
+    if not (c.isalpha() or c == '_' or c == '$'):
+        return False
+    for c in s[1:]:
+        if not (c.isalnum() or c == '_' or c == '$'):
+            return False
+    return s not in ('true', 'false', 'null')
+
+
+def _fmt_key(k, ind, depth):
+    """Format a map/set key: bare ident for simple strings, full QJSON otherwise."""
+    if isinstance(k, str):
+        if _is_bare_ident(k):
+            return k
+        return _esc(k)
+    return _fmt(k, ind, depth)
 
 
 def _fmt(obj, ind, depth):
@@ -474,6 +576,36 @@ def _fmt(obj, ind, depth):
         nl = "\n" + " " * (ind * (depth + 1))
         end = "\n" + " " * (ind * depth)
         return "[" + ",".join(nl + _fmt(v, ind, depth + 1) for v in obj) + end + "]"
+    if isinstance(obj, QMap):
+        if not obj:
+            return "{}"
+        is_set = all(v is True for _, v in obj.entries)
+        if is_set:
+            if ind is None:
+                return "{" + ",".join(
+                    _fmt_key(k, None, 0) for k, _ in obj.entries
+                ) + "}"
+            nl = "\n" + " " * (ind * (depth + 1))
+            end = "\n" + " " * (ind * depth)
+            return "{" + ",".join(
+                nl + _fmt_key(k, ind, depth + 1) for k, _ in obj.entries
+            ) + end + "}"
+        # Map syntax: string keys quoted, non-string keys as QJSON values
+        def _map_key(k, ind, depth):
+            if isinstance(k, str):
+                return _esc(k)
+            return _fmt(k, ind, depth)
+        if ind is None:
+            return "{" + ",".join(
+                _map_key(k, None, 0) + ":" + _fmt(v, None, 0)
+                for k, v in obj.entries
+            ) + "}"
+        nl = "\n" + " " * (ind * (depth + 1))
+        end = "\n" + " " * (ind * depth)
+        return "{" + ",".join(
+            nl + _map_key(k, ind, depth + 1) + ": " + _fmt(v, ind, depth + 1)
+            for k, v in obj.entries
+        ) + end + "}"
     if isinstance(obj, dict):
         if not obj:
             return "{}"

@@ -5,7 +5,7 @@
 //       bun run src/test-qjson.js
 // ============================================================
 
-import { qjson_parse, qjson_stringify, js64_encode, js64_decode, Unbound } from '../src/qjson.js';
+import { qjson_parse, qjson_stringify, js64_encode, js64_decode, Unbound, qjson_is_json, qjson_is_bound } from '../src/qjson.js';
 
 var passed = 0, failed = 0;
 var hasBigInt = typeof BigInt !== "undefined";
@@ -384,6 +384,142 @@ test("Unbound round-trip quoted", function() {
   var rt = qjson_parse(qjson_stringify(v));
   eq(rt.$qjson, "unbound");
   eq(rt.name, "Bob's Last Memo");
+});
+
+// ── Complex keys + set shorthand ─────────────────────────────
+
+test("bare ident as value", function() {
+  eq(qjson_parse("alice"), "alice");
+  eq(qjson_parse("truthy"), "truthy");
+  eq(qjson_parse("nullable"), "nullable");
+  eq(qjson_parse("falsehood"), "falsehood");
+});
+
+test("bare ident in array", function() {
+  var v = qjson_parse("[alice, bob]");
+  eq(v.length, 2);
+  eq(v[0], "alice");
+  eq(v[1], "bob");
+});
+
+test("set shorthand strings", function() {
+  var v = qjson_parse("{alice, bob, carol}");
+  eq(v.alice, true);
+  eq(v.bob, true);
+  eq(v.carol, true);
+});
+
+test("set shorthand numbers", function() {
+  var v = qjson_parse("{1, 2, 3}");
+  eq(v.$qjson, "map");
+  eq(v.entries.length, 3);
+  eq(v.entries[0][0], 1);
+  eq(v.entries[0][1], true);
+  eq(v.entries[2][0], 3);
+});
+
+test("complex key number", function() {
+  var v = qjson_parse('{42: "answer"}');
+  eq(v.$qjson, "map");
+  eq(v.entries.length, 1);
+  eq(v.entries[0][0], 42);
+  eq(v.entries[0][1], "answer");
+});
+
+test("complex key array", function() {
+  var v = qjson_parse('{[1,2]: "pair"}');
+  eq(v.$qjson, "map");
+  eq(v.entries[0][0].length, 2);
+  eq(v.entries[0][0][0], 1);
+  eq(v.entries[0][0][1], 2);
+});
+
+test("set of arrays (Datalog tuples)", function() {
+  var v = qjson_parse("{[alice, bob], [bob, carol]}");
+  eq(v.$qjson, "map");
+  eq(v.entries.length, 2);
+  eq(v.entries[0][0][0], "alice");
+  eq(v.entries[0][1], true);
+});
+
+test("boolean key", function() {
+  var v = qjson_parse("{true: 1}");
+  eq(v.$qjson, "map");
+  eq(v.entries[0][0], true);
+  eq(v.entries[0][1], 1);
+});
+
+test("null key", function() {
+  var v = qjson_parse("{null: 1}");
+  eq(v.$qjson, "map");
+  eq(v.entries[0][0], null);
+  eq(v.entries[0][1], 1);
+});
+
+test("unbound key", function() {
+  var v = qjson_parse("{?X: 42}");
+  eq(v.$qjson, "map");
+  eq(v.entries[0][0].$qjson, "unbound");
+  eq(v.entries[0][0].name, "X");
+});
+
+test("trailing comma in set", function() {
+  var v = qjson_parse("{a, b,}");
+  eq(v.a, true);
+  eq(v.b, true);
+});
+
+test("complex key stringify map", function() {
+  var m = {$qjson: "map", entries: [[42, "answer"]]};
+  eq(qjson_stringify(m), '{42:"answer"}');
+});
+
+test("set shorthand stringify", function() {
+  var m = {$qjson: "map", entries: [[[1,2], true], [[3,4], true]]};
+  eq(qjson_stringify(m), "{[1,2],[3,4]}");
+});
+
+test("set shorthand round-trip", function() {
+  var text = "{[1,2],[3,4]}";
+  var v = qjson_parse(text);
+  eq(qjson_stringify(v), text);
+});
+
+test("string-key backward compat", function() {
+  var text = '{"a":1,"b":2}';
+  var v = qjson_parse(text);
+  eq(typeof v, "object");
+  assert(v.$qjson === undefined, "no $qjson marker");
+  eq(v.a, 1);
+  eq(v.b, 2);
+  eq(qjson_stringify(v), text);
+});
+
+test("mixed string/number keys", function() {
+  var v = qjson_parse("{name: 1, 42: 2}");
+  eq(v.$qjson, "map");
+  eq(v.entries.length, 2);
+});
+
+test("is_json complex key", function() {
+  var m = {$qjson: "map", entries: [[42, "x"]]};
+  assert(!qjson_is_json(m), "number key is not JSON");
+  var m2 = {$qjson: "map", entries: [["a", 1]]};
+  assert(qjson_is_json(m2), "string key is JSON");
+});
+
+test("is_bound unbound key", function() {
+  var m = {$qjson: "map", entries: [[new Unbound("X"), 1]]};
+  assert(!qjson_is_bound(m), "unbound key");
+  var m2 = {$qjson: "map", entries: [[42, 1]]};
+  assert(qjson_is_bound(m2), "bound key");
+});
+
+test("empty object unchanged", function() {
+  var v = qjson_parse("{}");
+  assert(typeof v === "object" && !Array.isArray(v), "is object");
+  eq(Object.keys(v).length, 0);
+  eq(qjson_stringify(v), "{}");
 });
 
 console.log("\n" + (passed + failed) + " tests: " + passed + " passed, " + failed + " failed");

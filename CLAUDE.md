@@ -82,6 +82,16 @@ Reconstruct: value_id → canonical QJSON text
 **QJSON types**: N = BigInt, M = BigDecimal, L = BigFloat, 0j = blob (JS64),
 ? = Unbound variable (`?X`, `?"quoted name"`).  Valid JSON is valid QJSON.
 
+**Complex keys**: Object keys can be any QJSON value, not just strings.
+`{42: "answer"}`, `{[1,2]: "pair"}`.  Non-string keys produce QMap (Python)
+or `{$qjson: "map", entries: [...]}` (JS).
+
+**Set shorthand**: `{a, b, c}` → `{a: true, b: true, c: true}`.
+No new type — sets are objects where all values are `true`.
+
+**Bare identifiers**: Valid anywhere a value is expected, parsed as strings.
+`[alice, bob]` → `["alice", "bob"]`.  Keywords require word boundary.
+
 **Predicates**: `is_json(v)` — no QJSON extensions (pure JSON).
 `is_bound(v)` — no Unbound variables (recursive).
 
@@ -114,6 +124,7 @@ Propagation via leaf folding — each constraint fires at most once.
 (default `qjson_`).  8 tables: `{prefix}value`, `{prefix}number`,
 `{prefix}string`, `{prefix}blob`, `{prefix}array`, `{prefix}array_item`,
 `{prefix}object`, `{prefix}object_item`.
+- `object_item` uses `key_id INTEGER` (FK to value) — keys are full QJSON values
 - SQLite/SQLCipher: `REAL` (8-byte), `BLOB`, `INTEGER PRIMARY KEY`
 - PostgreSQL: `DOUBLE PRECISION` (8-byte), `BYTEA`, `SERIAL PRIMARY KEY`
 - SQLCipher: pass `key='...'` to adapter; `PRAGMA key` issued before any operation

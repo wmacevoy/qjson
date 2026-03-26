@@ -6,7 +6,7 @@
 import os, sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from decimal import Decimal
-from qjson import parse, stringify, BigInt, BigFloat, Blob, Unbound, js64_encode, js64_decode
+from qjson import parse, stringify, BigInt, BigFloat, Blob, Unbound, QMap, is_json, is_bound, js64_encode, js64_decode
 
 passed = 0
 failed = 0
@@ -425,6 +425,197 @@ test("Unbound stringify quoted", test_unbound_stringify_quoted)
 test("Unbound round-trip bare", test_unbound_roundtrip_bare)
 test("Unbound round-trip quoted", test_unbound_roundtrip_quoted)
 test("Unbound equality", test_unbound_equality)
+
+# ── Complex keys + set shorthand tests ──────────────────────
+
+def test_bare_ident_value():
+    assert parse('alice') == 'alice'
+    assert parse('truthy') == 'truthy'
+    assert parse('nullable') == 'nullable'
+
+def test_bare_ident_in_array():
+    assert parse('[alice, bob]') == ['alice', 'bob']
+
+def test_set_shorthand_strings():
+    v = parse('{alice, bob, carol}')
+    assert v == {'alice': True, 'bob': True, 'carol': True}
+
+def test_set_shorthand_numbers():
+    v = parse('{1, 2, 3}')
+    assert isinstance(v, QMap)
+    assert all(val is True for _, val in v.entries)
+    assert [k for k, _ in v.entries] == [1, 2, 3]
+
+def test_complex_key_number():
+    v = parse('{42: "answer"}')
+    assert isinstance(v, QMap)
+    assert v[42] == 'answer'
+
+def test_complex_key_array():
+    v = parse('{[1,2]: "pair"}')
+    assert isinstance(v, QMap)
+    assert v.entries[0] == ([1, 2], 'pair')
+
+def test_set_shorthand_tuples():
+    v = parse('{[alice, bob], [bob, carol]}')
+    assert isinstance(v, QMap)
+    assert len(v.entries) == 2
+    assert v.entries[0] == (['alice', 'bob'], True)
+    assert v.entries[1] == (['bob', 'carol'], True)
+
+def test_complex_key_stringify():
+    m = QMap([(42, 'answer')])
+    assert stringify(m) == '{42:"answer"}'
+
+def test_set_shorthand_stringify():
+    m = QMap([([1, 2], True), ([3, 4], True)])
+    assert stringify(m) == '{[1,2],[3,4]}'
+
+def test_set_shorthand_roundtrip():
+    text = '{[1,2],[3,4]}'
+    v = parse(text)
+    assert stringify(v) == text
+
+def test_qmap_equality():
+    a = QMap([(42, 'x')])
+    b = QMap([(42, 'x')])
+    assert a == b
+
+def test_qmap_dict_equality():
+    m = QMap([('a', 1), ('b', 2)])
+    assert m == {'a': 1, 'b': 2}
+
+def test_mixed_keys():
+    v = parse('{name: 1, 42: 2}')
+    assert isinstance(v, QMap)
+    assert v['name'] == 1
+    assert v[42] == 2
+
+def test_boolean_key():
+    v = parse('{true: 1}')
+    assert isinstance(v, QMap)
+    assert v[True] == 1
+
+def test_is_json_qmap():
+    assert not is_json(QMap([(42, 'x')]))
+    assert is_json(QMap([('a', 1), ('b', 2)]))
+
+def test_is_bound_qmap():
+    assert is_bound(QMap([(42, 'x')]))
+    assert not is_bound(QMap([(Unbound('X'), 1)]))
+
+test("bare ident as value", test_bare_ident_value)
+test("bare ident in array", test_bare_ident_in_array)
+test("set shorthand strings", test_set_shorthand_strings)
+test("set shorthand numbers", test_set_shorthand_numbers)
+test("complex key number", test_complex_key_number)
+test("complex key array", test_complex_key_array)
+test("set shorthand tuples", test_set_shorthand_tuples)
+test("complex key stringify", test_complex_key_stringify)
+test("set shorthand stringify", test_set_shorthand_stringify)
+test("set shorthand round-trip", test_set_shorthand_roundtrip)
+test("QMap equality", test_qmap_equality)
+test("QMap dict equality", test_qmap_dict_equality)
+test("mixed string/number keys", test_mixed_keys)
+test("boolean key", test_boolean_key)
+test("is_json QMap", test_is_json_qmap)
+test("is_bound QMap", test_is_bound_qmap)
+
+def test_null_key():
+    v = parse('{null: 1}')
+    assert isinstance(v, QMap)
+    assert v[None] == 1
+
+def test_object_key():
+    v = parse('{{a: 1}: "nested"}')
+    assert isinstance(v, QMap)
+    assert v.entries[0][0] == {'a': 1}
+    assert v.entries[0][1] == 'nested'
+
+def test_trailing_comma_set():
+    v = parse('{a, b,}')
+    assert v == {'a': True, 'b': True}
+
+def test_single_element_set():
+    v = parse('{alice}')
+    assert v == {'alice': True}
+
+def test_nested_set():
+    v = parse('{items: {a, b, c}}')
+    assert v['items'] == {'a': True, 'b': True, 'c': True}
+
+def test_set_in_array():
+    v = parse('[{x, y}, {a, b}]')
+    assert v[0] == {'x': True, 'y': True}
+    assert v[1] == {'a': True, 'b': True}
+
+def test_keyword_in_set():
+    """true/false/null as set keys are booleans/null, not strings."""
+    v = parse('{true, false, null}')
+    assert isinstance(v, QMap)
+    assert len(v.entries) == 3
+    keys = [k for k, _ in v.entries]
+    assert True in keys
+    assert False in keys
+    assert None in keys
+
+def test_set_stringify_keyword_keys():
+    m = QMap([(True, True), (False, True)])
+    s = stringify(m)
+    assert s == '{true,false}'
+
+def test_complex_key_round_trip_sql():
+    """QMap round-trips through SQL adapter."""
+    import sqlite3
+    from qjson_sql import qjson_sql_adapter
+    conn = sqlite3.connect(':memory:')
+    a = qjson_sql_adapter(conn)
+    a['setup']()
+    m = QMap([(42, 'answer'), ([1, 2], 'pair')])
+    vid = a['store'](m)
+    a['commit']()
+    v = a['load'](vid)
+    assert isinstance(v, QMap)
+    assert len(v.entries) == 2
+
+def test_set_round_trip_sql():
+    """String-key sets round-trip through SQL as dicts."""
+    import sqlite3
+    from qjson_sql import qjson_sql_adapter
+    conn = sqlite3.connect(':memory:')
+    a = qjson_sql_adapter(conn)
+    a['setup']()
+    d = {'alice': True, 'bob': True}
+    vid = a['store'](d)
+    a['commit']()
+    v = a['load'](vid)
+    assert v == d
+
+def test_bare_ident_not_in_quoted_string():
+    """Bare idents don't interfere with quoted strings."""
+    v = parse('{"alice": "bob"}')
+    assert v == {'alice': 'bob'}
+
+def test_complex_key_stringify_round_trip():
+    """Complex key map syntax round-trips."""
+    m = QMap([(42, 'answer'), ('name', 'alice')])
+    s = stringify(m)
+    v = parse(s)
+    assert isinstance(v, QMap)
+    assert len(v.entries) == 2
+
+test("null key", test_null_key)
+test("object as key", test_object_key)
+test("trailing comma set", test_trailing_comma_set)
+test("single element set", test_single_element_set)
+test("nested set", test_nested_set)
+test("set in array", test_set_in_array)
+test("keyword keys in set", test_keyword_in_set)
+test("set stringify keyword keys", test_set_stringify_keyword_keys)
+test("complex key SQL round-trip", test_complex_key_round_trip_sql)
+test("set SQL round-trip", test_set_round_trip_sql)
+test("bare ident with quoted string", test_bare_ident_not_in_quoted_string)
+test("complex key stringify round-trip", test_complex_key_stringify_round_trip)
 
 print("\n%d tests: %d passed, %d failed" % (passed + failed, passed, failed))
 if failed:

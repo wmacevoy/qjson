@@ -63,6 +63,15 @@ Functions: `POWER`, `SQRT`, `EXP`, `LOG`, `SIN`, `COS`, `TAN`,
   query: ?X,               // unbound — matches anything
   /* nested /* block */ comments */
 }
+
+// Complex keys — any value can be a key
+{42: "answer", [1, 2]: "pair"}
+
+// Set shorthand — sugar for {a: true, b: true, ...}
+{alice, bob, carol}
+
+// Datalog facts — sets of tuples
+{[alice, bob], [bob, carol]}
 ```
 
 Valid JSON is valid QJSON.

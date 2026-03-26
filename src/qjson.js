@@ -91,6 +91,13 @@ function qjson_is_json(value) {
   if (typeof value === "bigdecimal" || typeof value === "bigfloat") return false;
   if (typeof value === "object") {
     if (value.$qjson === "blob" || value.$qjson === "unbound") return false;
+    if (value.$qjson === "map") {
+      for (var i = 0; i < value.entries.length; i++) {
+        if (typeof value.entries[i][0] !== "string") return false;
+        if (!qjson_is_json(value.entries[i][1])) return false;
+      }
+      return true;
+    }
     if (Array.isArray(value)) {
       for (var i = 0; i < value.length; i++)
         if (!qjson_is_json(value[i])) return false;
@@ -107,6 +114,13 @@ function qjson_is_json(value) {
 function qjson_is_bound(value) {
   if (typeof value === "object" && value !== null) {
     if (value.$qjson === "unbound") return false;
+    if (value.$qjson === "map") {
+      for (var i = 0; i < value.entries.length; i++) {
+        if (!qjson_is_bound(value.entries[i][0])) return false;
+        if (!qjson_is_bound(value.entries[i][1])) return false;
+      }
+      return true;
+    }
     if (Array.isArray(value)) {
       for (var i = 0; i < value.length; i++)
         if (!qjson_is_bound(value[i])) return false;
@@ -174,9 +188,15 @@ function qjson_parse(text) {
     return text.substring(start, pos);
   }
 
-  function key() {
-    if (ch() === '"') return string();
-    return ident();
+  function isKeyword(word) {
+    var end = pos + word.length;
+    if (text.substr(pos, word.length) !== word) return false;
+    if (end < len) {
+      var nc = text[end];
+      if ((nc >= "a" && nc <= "z") || (nc >= "A" && nc <= "Z") ||
+          (nc >= "0" && nc <= "9") || nc === "_" || nc === "$") return false;
+    }
+    return true;
   }
 
   function value() {
@@ -185,12 +205,13 @@ function qjson_parse(text) {
     if (c === '"') return string();
     if (c === "{") return obj();
     if (c === "[") return arr();
-    if (c === "t") return literal("true", true);
-    if (c === "f") return literal("false", false);
-    if (c === "n" && text.substr(pos, 4) === "null") return literal("null", null);
+    if (c === "t" && isKeyword("true")) return literal("true", true);
+    if (c === "f" && isKeyword("false")) return literal("false", false);
+    if (c === "n" && isKeyword("null")) return literal("null", null);
     if (c === "0" && pos + 1 < len && (text[pos + 1] === "j" || text[pos + 1] === "J")) return blob();
     if (c === "-" || (c >= "0" && c <= "9")) return number();
     if (c === "?") return unbound();
+    if ((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$") return ident();
     throw new Error("Unexpected '" + c + "' at " + pos);
   }
 
@@ -304,20 +325,37 @@ function qjson_parse(text) {
 
   function obj() {
     expect("{");
-    var d = {};
     ws();
-    if (ch() === "}") { pos++; return d; }
+    if (ch() === "}") { pos++; return {}; }
+    var entries = [];
+    var allStringKeys = true;
     while (true) {
       ws();
-      var k = key();
-      ws(); expect(":");
-      d[k] = value();
+      var k = value();
       ws();
-      if (ch() === "}") { pos++; return d; }
+      var v;
+      if (ch() === ":") {
+        pos++;
+        v = value();
+      } else {
+        v = true; // set shorthand
+      }
+      if (typeof k !== "string") allStringKeys = false;
+      entries.push([k, v]);
+      ws();
+      if (ch() === "}") { pos++; break; }
       expect(",");
       ws();
-      if (ch() === "}") { pos++; return d; }  // trailing comma
+      if (ch() === "}") { pos++; break; }  // trailing comma
     }
+    if (allStringKeys) {
+      var d = {};
+      for (var i = 0; i < entries.length; i++) {
+        d[entries[i][0]] = entries[i][1];
+      }
+      return d;
+    }
+    return { $qjson: "map", entries: entries };
   }
 
   function arr() {
@@ -347,6 +385,26 @@ function qjson_stringify(obj) {
   return _fmt(obj);
 }
 
+function _isBareIdent(s) {
+  if (s.length === 0) return false;
+  var c = s.charAt(0);
+  if (!((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") || c === "_" || c === "$")) return false;
+  for (var i = 1; i < s.length; i++) {
+    c = s.charAt(i);
+    if (!((c >= "a" && c <= "z") || (c >= "A" && c <= "Z") ||
+          (c >= "0" && c <= "9") || c === "_" || c === "$")) return false;
+  }
+  return s !== "true" && s !== "false" && s !== "null";
+}
+
+function _fmtKey(k) {
+  if (typeof k === "string") {
+    if (_isBareIdent(k)) return k;
+    return _esc(k);
+  }
+  return _fmt(k);
+}
+
 function _fmt(obj) {
   if (obj === null || obj === undefined) return "null";
   if (obj === true)  return "true";
@@ -372,6 +430,24 @@ function _fmt(obj) {
   // Blob
   if (typeof obj === "object" && obj !== null && obj.$qjson === "blob") {
     return "0j" + js64_encode(obj.data);
+  }
+  // QMap (complex keys)
+  if (typeof obj === "object" && obj !== null && obj.$qjson === "map") {
+    var entries = obj.entries;
+    if (entries.length === 0) return "{}";
+    var isSet = true;
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i][1] !== true) { isSet = false; break; }
+    }
+    var parts = [];
+    if (isSet) {
+      for (var i = 0; i < entries.length; i++) parts.push(_fmtKey(entries[i][0]));
+    } else {
+      for (var i = 0; i < entries.length; i++) {
+        parts.push(_fmtKey(entries[i][0]) + ":" + _fmt(entries[i][1]));
+      }
+    }
+    return "{" + parts.join(",") + "}";
   }
   // String
   if (typeof obj === "string") return _esc(obj);

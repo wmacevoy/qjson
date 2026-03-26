@@ -24,7 +24,7 @@ import math
 from decimal import Decimal
 
 # Import QJSON types for classification
-from qjson import BigInt, BigFloat, Blob, Unbound
+from qjson import BigInt, BigFloat, Blob, Unbound, QMap
 
 
 # ── IEEE 754 nextUp / nextDown ───────────────────────────────
@@ -155,6 +155,8 @@ def _classify_value(value):
         return ("string", None)
     if isinstance(value, (list, tuple)):
         return ("array", None)
+    if isinstance(value, QMap):
+        return ("object", None)
     if isinstance(value, dict):
         return ("object", None)
     return ("string", None)
@@ -330,8 +332,9 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
         _exec(
             'CREATE TABLE IF NOT EXISTS "%s" '
             '(id %s, object_id INTEGER REFERENCES "%s"(id), '
-            'key TEXT, value_id INTEGER REFERENCES "%s"(id))'
-            % (t_object_item, SPK, t_object, t_value))
+            'key_id INTEGER REFERENCES "%s"(id), '
+            'value_id INTEGER REFERENCES "%s"(id))'
+            % (t_object_item, SPK, t_object, t_value, t_value))
 
         _exec('CREATE INDEX IF NOT EXISTS "ix_%s_vid" ON "%s"(value_id)' % (t_number, t_number))
         _exec('CREATE INDEX IF NOT EXISTS "ix_%s_lo" ON "%s"(lo)' % (t_number, t_number))
@@ -342,6 +345,7 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
         _exec('CREATE INDEX IF NOT EXISTS "ix_%s_aid" ON "%s"(array_id)' % (t_array_item, t_array_item))
         _exec('CREATE INDEX IF NOT EXISTS "ix_%s_vid" ON "%s"(value_id)' % (t_object, t_object))
         _exec('CREATE INDEX IF NOT EXISTS "ix_%s_oid" ON "%s"(object_id)' % (t_object_item, t_object_item))
+        _exec('CREATE INDEX IF NOT EXISTS "ix_%s_kid" ON "%s"(key_id)' % (t_object_item, t_object_item))
         conn.commit()
 
     def _store(value):
@@ -405,11 +409,13 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
             object_id = _insert_returning(
                 'INSERT INTO "%s" (value_id) VALUES (%s)' % (t_object, P),
                 (vid,))
-            for k, v in value.items():
+            entries = value.items() if isinstance(value, (dict, QMap)) else value.items()
+            for k, v in entries:
+                key_vid = _store(k)
                 item_vid = _store(v)
                 _exec(
-                    'INSERT INTO "%s" (object_id, key, value_id) VALUES (%s, %s, %s)'
-                    % (t_object_item, P, P, P), (object_id, k, item_vid))
+                    'INSERT INTO "%s" (object_id, key_id, value_id) VALUES (%s, %s, %s)'
+                    % (t_object_item, P, P, P), (object_id, key_vid, item_vid))
             return vid
 
         return vid
@@ -489,12 +495,22 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
             if not ob:
                 return {}
             items = _fetchall(
-                'SELECT key, value_id FROM "%s" WHERE object_id = %s'
+                'SELECT key_id, value_id FROM "%s" WHERE object_id = %s'
                 % (t_object_item, P), (ob[0],))
-            result = {}
+            entries = []
+            all_string_keys = True
             for item in items:
-                result[item[0]] = _load(item[1])
-            return result
+                k = _load(item[0])
+                v = _load(item[1])
+                if not isinstance(k, str):
+                    all_string_keys = False
+                entries.append((k, v))
+            if all_string_keys:
+                result = {}
+                for k, v in entries:
+                    result[k] = v
+                return result
+            return QMap(entries)
 
         return None
 
@@ -532,9 +548,12 @@ def qjson_sql_adapter(db, prefix="qjson_", dialect=None, ext_path=None, key=None
                 % (t_object, P), (vid,))
             if ob:
                 items = _fetchall(
-                    'SELECT value_id FROM "%s" WHERE object_id = %s'
+                    'SELECT key_id, value_id FROM "%s" WHERE object_id = %s'
                     % (t_object_item, P), (ob[0],))
-                child_vids = [item[0] for item in items]
+                child_vids = []
+                for item in items:
+                    child_vids.append(item[0])  # key_id
+                    child_vids.append(item[1])  # value_id
                 # Delete join rows first (FK constraints)
                 _exec('DELETE FROM "%s" WHERE object_id = %s'
                       % (t_object_item, P), (ob[0],))

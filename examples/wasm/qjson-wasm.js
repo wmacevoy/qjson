@@ -32,7 +32,7 @@ var QJSONDatabase = (function() {
     'CREATE TABLE IF NOT EXISTS "' + PREFIX + 'array" (id INTEGER PRIMARY KEY, value_id INTEGER REFERENCES "' + PREFIX + 'value"(id))',
     'CREATE TABLE IF NOT EXISTS "' + PREFIX + 'array_item" (id INTEGER PRIMARY KEY, array_id INTEGER REFERENCES "' + PREFIX + 'array"(id), idx INTEGER, value_id INTEGER REFERENCES "' + PREFIX + 'value"(id))',
     'CREATE TABLE IF NOT EXISTS "' + PREFIX + 'object" (id INTEGER PRIMARY KEY, value_id INTEGER REFERENCES "' + PREFIX + 'value"(id))',
-    'CREATE TABLE IF NOT EXISTS "' + PREFIX + 'object_item" (id INTEGER PRIMARY KEY, object_id INTEGER REFERENCES "' + PREFIX + 'object"(id), key TEXT, value_id INTEGER REFERENCES "' + PREFIX + 'value"(id))',
+    'CREATE TABLE IF NOT EXISTS "' + PREFIX + 'object_item" (id INTEGER PRIMARY KEY, object_id INTEGER REFERENCES "' + PREFIX + 'object"(id), key_id INTEGER REFERENCES "' + PREFIX + 'value"(id), value_id INTEGER REFERENCES "' + PREFIX + 'value"(id))',
   ];
 
   var INDEXES = [
@@ -150,10 +150,11 @@ var QJSONDatabase = (function() {
       var objectId = await this._lastId();
       var keys = Object.keys(value);
       for (var i = 0; i < keys.length; i++) {
+        var keyVid = await this.store(keys[i]);
         var itemVid = await this.store(value[keys[i]]);
         await this._db.exec(
-          'INSERT INTO "' + PREFIX + 'object_item" (object_id, key, value_id) VALUES (?, ?, ?)',
-          [objectId, keys[i], itemVid]);
+          'INSERT INTO "' + PREFIX + 'object_item" (object_id, key_id, value_id) VALUES (?, ?, ?)',
+          [objectId, keyVid, itemVid]);
       }
       return vid;
     }
@@ -214,10 +215,11 @@ var QJSONDatabase = (function() {
         'SELECT id FROM "' + PREFIX + 'object" WHERE value_id = ?', [vid]);
       if (!ob.length) return {};
       var items = await this._db.select(
-        'SELECT key, value_id FROM "' + PREFIX + 'object_item" WHERE object_id = ?', [ob[0].id]);
+        'SELECT key_id, value_id FROM "' + PREFIX + 'object_item" WHERE object_id = ?', [ob[0].id]);
       var result = {};
       for (var i = 0; i < items.length; i++) {
-        result[items[i].key] = await this.load(items[i].value_id);
+        var k = await this.load(items[i].key_id);
+        result[k] = await this.load(items[i].value_id);
       }
       return result;
     }
@@ -285,10 +287,10 @@ var QJSONDatabase = (function() {
         'SELECT id FROM "' + PREFIX + 'object" WHERE value_id = ?', [vid]);
       if (!ob.length) return "{}";
       var items = await this._db.select(
-        'SELECT key, value_id FROM "' + PREFIX + 'object_item" WHERE object_id = ? ORDER BY key', [ob[0].id]);
+        'SELECT key_id, value_id FROM "' + PREFIX + 'object_item" WHERE object_id = ?', [ob[0].id]);
       var parts = [];
       for (var i = 0; i < items.length; i++) {
-        var k = '"' + items[i].key.replace(/\\/g, '\\\\').replace(/"/g, '\\"') + '"';
+        var k = await this.toQJSON(items[i].key_id);
         parts.push(k + ":" + await this.toQJSON(items[i].value_id));
       }
       return "{" + parts.join(",") + "}";

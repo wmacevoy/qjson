@@ -201,6 +201,7 @@ function _classifyValue(value) {
     if (value.$qjson === "unbound") return { type: "unbound", raw: (value.name != null) ? value.name : "" };
     if (value.$qjson === "blob") return { type: "blob", raw: null };
     if (Array.isArray(value)) return { type: "array", raw: null };
+    if (value.$qjson === "map") return { type: "object", raw: null };
     return { type: "object", raw: null };
   }
   return { type: "string", raw: null };
@@ -302,11 +303,20 @@ function qjsonSqlAdapter(db, options) {
     if (c.type === "object") {
       var oInfo = _stmt('INSERT INTO "' + _tObject + '" (value_id) VALUES (?)').run(vid);
       var objectId = Number(oInfo.lastInsertRowid);
-      var keys = Object.keys(value);
-      for (var i = 0; i < keys.length; i++) {
-        var k = keys[i];
-        var itemVid = _store(value[k]);
-        _stmt('INSERT INTO "' + _tObjectItem + '" (object_id, key, value_id) VALUES (?, ?, ?)').run(objectId, k, itemVid);
+      if (value.$qjson === "map") {
+        for (var i = 0; i < value.entries.length; i++) {
+          var keyVid = _store(value.entries[i][0]);
+          var itemVid = _store(value.entries[i][1]);
+          _stmt('INSERT INTO "' + _tObjectItem + '" (object_id, key_id, value_id) VALUES (?, ?, ?)').run(objectId, keyVid, itemVid);
+        }
+      } else {
+        var keys = Object.keys(value);
+        for (var i = 0; i < keys.length; i++) {
+          var k = keys[i];
+          var keyVid = _store(k);
+          var itemVid = _store(value[k]);
+          _stmt('INSERT INTO "' + _tObjectItem + '" (object_id, key_id, value_id) VALUES (?, ?, ?)').run(objectId, keyVid, itemVid);
+        }
       }
       return vid;
     }
@@ -379,12 +389,23 @@ function qjsonSqlAdapter(db, options) {
     if (type === "object") {
       var or_ = _stmt('SELECT id FROM "' + _tObject + '" WHERE value_id = ?').get(vid);
       if (!or_) return {};
-      var items = _stmt('SELECT key, value_id FROM "' + _tObjectItem + '" WHERE object_id = ?').all(or_.id);
-      var result = {};
+      var items = _stmt('SELECT key_id, value_id FROM "' + _tObjectItem + '" WHERE object_id = ?').all(or_.id);
+      var allStringKeys = true;
+      var entries = [];
       for (var i = 0; i < items.length; i++) {
-        result[items[i].key] = _load(items[i].value_id);
+        var k = _load(items[i].key_id);
+        var v = _load(items[i].value_id);
+        if (typeof k !== "string") allStringKeys = false;
+        entries.push([k, v]);
       }
-      return result;
+      if (allStringKeys) {
+        var result = {};
+        for (var i = 0; i < entries.length; i++) {
+          result[entries[i][0]] = entries[i][1];
+        }
+        return result;
+      }
+      return { $qjson: "map", entries: entries };
     }
 
     return null;
@@ -414,8 +435,9 @@ function qjsonSqlAdapter(db, options) {
     } else if (type === "object") {
       var or_ = _stmt('SELECT id FROM "' + _tObject + '" WHERE value_id = ?').get(vid);
       if (or_) {
-        var items = _stmt('SELECT value_id FROM "' + _tObjectItem + '" WHERE object_id = ?').all(or_.id);
+        var items = _stmt('SELECT key_id, value_id FROM "' + _tObjectItem + '" WHERE object_id = ?').all(or_.id);
         for (var i = 0; i < items.length; i++) {
+          _remove(items[i].key_id);
           _remove(items[i].value_id);
         }
         _stmt('DELETE FROM "' + _tObjectItem + '" WHERE object_id = ?').run(or_.id);
@@ -438,7 +460,7 @@ function qjsonSqlAdapter(db, options) {
       db.exec('CREATE TABLE IF NOT EXISTS "' + _tArray + '" (id ' + SPK + ', value_id INTEGER REFERENCES "' + _tValue + '"(id))');
       db.exec('CREATE TABLE IF NOT EXISTS "' + _tArrayItem + '" (id ' + SPK + ', array_id INTEGER REFERENCES "' + _tArray + '"(id), idx INTEGER, value_id INTEGER REFERENCES "' + _tValue + '"(id))');
       db.exec('CREATE TABLE IF NOT EXISTS "' + _tObject + '" (id ' + SPK + ', value_id INTEGER REFERENCES "' + _tValue + '"(id))');
-      db.exec('CREATE TABLE IF NOT EXISTS "' + _tObjectItem + '" (id ' + SPK + ', object_id INTEGER REFERENCES "' + _tObject + '"(id), key TEXT, value_id INTEGER REFERENCES "' + _tValue + '"(id))');
+      db.exec('CREATE TABLE IF NOT EXISTS "' + _tObjectItem + '" (id ' + SPK + ', object_id INTEGER REFERENCES "' + _tObject + '"(id), key_id INTEGER REFERENCES "' + _tValue + '"(id), value_id INTEGER REFERENCES "' + _tValue + '"(id))');
 
       db.exec('CREATE INDEX IF NOT EXISTS "ix_' + _tNumber + '_vid" ON "' + _tNumber + '"(value_id)');
       db.exec('CREATE INDEX IF NOT EXISTS "ix_' + _tNumber + '_lo" ON "' + _tNumber + '"(lo)');
@@ -449,6 +471,7 @@ function qjsonSqlAdapter(db, options) {
       db.exec('CREATE INDEX IF NOT EXISTS "ix_' + _tArrayItem + '_aid" ON "' + _tArrayItem + '"(array_id)');
       db.exec('CREATE INDEX IF NOT EXISTS "ix_' + _tObject + '_vid" ON "' + _tObject + '"(value_id)');
       db.exec('CREATE INDEX IF NOT EXISTS "ix_' + _tObjectItem + '_oid" ON "' + _tObjectItem + '"(object_id)');
+      db.exec('CREATE INDEX IF NOT EXISTS "ix_' + _tObjectItem + '_kid" ON "' + _tObjectItem + '"(key_id)');
     },
 
     store: function(value) {

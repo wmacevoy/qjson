@@ -14,7 +14,8 @@ and human-friendly syntax.
 | number | `3.14` | — | `3.14` |
 | string | `"hello"` | — | `"hello"` |
 | array | `[1, 2]` | trailing comma | `[1, 2,]` |
-| object | `{"a": 1}` | unquoted keys, trailing comma | `{a: 1,}` |
+| object | `{"a": 1}` | unquoted keys, trailing comma, complex keys | `{a: 1,}` |
+| set | — | set shorthand (object with `true` values) | `{alice, bob}` |
 | BigInt | — | `N` suffix | `42N` |
 | BigDecimal | — | `M` suffix | `67432.50M` |
 | BigFloat | — | `L` suffix | `3.14159265358979L` |
@@ -187,6 +188,55 @@ Object keys that are valid identifiers don't need quotes:
 Valid unquoted key: starts with `[a-zA-Z_$]`, followed by
 `[a-zA-Z0-9_$]`.
 
+## Complex keys
+
+Object keys can be any QJSON value, not just strings:
+
+```
+{name: "alice"}              // string key (backward compat)
+{42: "answer"}               // number key
+{[1, 2]: "pair"}             // array key
+{?X: 42}                     // unbound key (pattern matching)
+{{a: 1}: "nested"}           // object key
+```
+
+When all keys are strings, the object is a plain map (backward
+compatible).  When any key is non-string, the object is a
+general-purpose map.
+
+## Set shorthand
+
+An object entry without `:` defaults to `true`:
+
+```
+{alice, bob, carol}          // → {alice: true, bob: true, carol: true}
+{[alice, bob], [bob, carol]} // set of tuples (Datalog facts)
+{1, 2, 3}                   // set of numbers
+```
+
+No new type — sets are objects where all values are `true`.
+On serialization, if every value is `true`, set shorthand is
+emitted.
+
+## Bare identifiers
+
+Bare identifiers (unquoted names) are valid anywhere a value
+is expected.  They parse as strings:
+
+```
+[alice, bob]                 // → ["alice", "bob"]
+{name: alice}                // → {name: "alice"}
+```
+
+Keywords `true`, `false`, `null` take priority when they are
+exact words (not part of a longer identifier):
+
+```
+true                         // boolean true
+truthy                       // string "truthy"
+nullable                     // string "nullable"
+```
+
 ## QJSON type enum (C API)
 
 ```c
@@ -231,10 +281,11 @@ bytes.
 
 ```
 value     = ws (null | boolean | number | string | blob
-               | array | object) ws
+               | unbound | array | object | ident) ws
 
-null      = 'null'
-boolean   = 'false' | 'true'
+null      = 'null' !ident_cont
+boolean   = ('false' | 'true') !ident_cont
+ident_cont = [a-zA-Z0-9_$]
 
 number    = '-'? digits ('.' digits)? (('e'|'E') ('+'|'-')? digits)?
             ('N'|'n'|'M'|'m'|'L'|'l')?
@@ -250,10 +301,14 @@ character = <any UTF-8 byte sequence except '"' and '\'>
           | '\u{' hex+ '}'
 hex       = [0-9A-Fa-f]
 
-array     = '[' (value (',' value)* ','?)? ']'
-object    = '{' (pair (',' pair)* ','?)? '}'
-pair      = (string | ident) ':' value
+unbound   = '?' (ident | string)?
+
 ident     = [a-zA-Z_$] [a-zA-Z0-9_$]*
+
+array     = '[' (value (',' value)* ','?)? ']'
+object    = '{' (entry (',' entry)* ','?)? '}'
+entry     = value ':' value          // map entry
+          | value                    // set entry (value defaults to true)
 
 comment   = '//' <to end of line>
           | '/*' (comment | <any>)* '*/'
@@ -268,6 +323,11 @@ Notes:
 - No suffix after a number means plain IEEE 754 double.
 - A number with suffix is a distinct type (`42` ≠ `42N` ≠ `42M`).
 - `0j` is unambiguous: no legal number has `j`/`J` after `0`.
+- Bare identifiers are valid anywhere a value is expected (parsed as strings).
+- Keywords (`true`, `false`, `null`) require a word boundary to avoid
+  ambiguity with identifiers like `truthy` or `nullable`.
+- Object entries support set shorthand: `{a, b}` is sugar for `{a: true, b: true}`.
+- Object keys can be any QJSON value, not just strings.
 
 ## Canonical representation
 
@@ -367,12 +427,21 @@ Elements in order.  No trailing commas.  No whitespace.
 
 ### Object
 
-Keys sorted by UTF-8 byte order (ascending).  Always quoted
-(even valid identifiers).  No trailing commas.  No whitespace.
-No duplicate keys.
+String keys: sorted by UTF-8 byte order (ascending), always
+quoted (even valid identifiers).  No trailing commas.  No
+whitespace.  No duplicate keys.
 
 ```
 {"a":1,"b":2}
+```
+
+Complex keys (non-string): each key is serialized as a full
+QJSON value.  Set shorthand: if all values are `true`, omit
+`:true` and emit `{key1,key2,...}`.
+
+```
+{42:"answer"}                // number key
+{[1,2],[3,4]}                // set of arrays (set shorthand)
 ```
 
 ### Value identity vs text identity
@@ -411,7 +480,8 @@ projection.
 | blob | `0j` + JS64 body |
 | string | `"..."` minimal escapes, literal UTF-8 |
 | array | `[v,v,v]` |
-| object | `{"k":v,"k":v}` sorted keys, quoted |
+| object | `{"k":v,"k":v}` sorted string keys, quoted |
+| set | `{k,k,k}` set shorthand (all values `true`) |
 
 ## SQL representation
 
@@ -519,7 +589,7 @@ CREATE TABLE qjson_object (
 CREATE TABLE qjson_object_item (
     id        INTEGER PRIMARY KEY,
     object_id INTEGER REFERENCES qjson_object(id),
-    key       TEXT,
+    key_id    INTEGER REFERENCES qjson_value(id),
     value_id  INTEGER REFERENCES qjson_value(id)
 );
 ```
@@ -572,7 +642,7 @@ CREATE TABLE qjson_object (
 CREATE TABLE qjson_object_item (
     id        SERIAL PRIMARY KEY,
     object_id INTEGER REFERENCES qjson_object(id),
-    key       TEXT,
+    key_id    INTEGER REFERENCES qjson_value(id),
     value_id  INTEGER REFERENCES qjson_value(id)
 );
 ```
@@ -695,7 +765,7 @@ pure translation.
 
 | Syntax | Meaning | SQL |
 |--------|---------|-----|
-| `.key` | object child by key | JOIN `object` + `object_item WHERE key = 'key'` |
+| `.key` | object child by key | JOIN `object` + `object_item` + `string WHERE value = 'key'` |
 | `[n]` | array index | JOIN `array` + `array_item WHERE idx = n` |
 | `[K]` | variable binding | JOIN `array` + `array_item` (K binds to idx) |
 | `.[]` | all array elements | JOIN `array` + `array_item` (all rows) |

@@ -214,7 +214,7 @@ async function init() {
     await db.exec("CREATE TABLE IF NOT EXISTS qjson_array (id INTEGER PRIMARY KEY, value_id INTEGER)");
     await db.exec("CREATE TABLE IF NOT EXISTS qjson_array_item (id INTEGER PRIMARY KEY, array_id INTEGER, idx INTEGER, value_id INTEGER)");
     await db.exec("CREATE TABLE IF NOT EXISTS qjson_object (id INTEGER PRIMARY KEY, value_id INTEGER)");
-    await db.exec("CREATE TABLE IF NOT EXISTS qjson_object_item (id INTEGER PRIMARY KEY, object_id INTEGER, key TEXT, value_id INTEGER)");
+    await db.exec("CREATE TABLE IF NOT EXISTS qjson_object_item (id INTEGER PRIMARY KEY, object_id INTEGER, key_id INTEGER, value_id INTEGER)");
     document.getElementById("status").innerHTML = '<span class="ok">WASM ready</span>';
   } catch(e) {
     document.getElementById("status").innerHTML = '<span class="err">WASM failed: ' + e.message + '</span>';
@@ -330,8 +330,13 @@ async function runSolve(id) {
         await db.exec("INSERT INTO qjson_number (value_id, lo, str, hi) VALUES (?, ?, NULL, ?)",
           [vid, obj[k], obj[k]]);
       }
-      await db.exec("INSERT INTO qjson_object_item (object_id, key, value_id) VALUES (?, ?, ?)",
-        [obj_id, k, vid]);
+      // Store key as a string value
+      await db.exec("INSERT INTO qjson_value (type) VALUES ('string')");
+      var key_rows = await db.select("SELECT last_insert_rowid() AS id");
+      var key_vid = key_rows[0].id;
+      await db.exec("INSERT INTO qjson_string (value_id, value) VALUES (?, ?)", [key_vid, k]);
+      await db.exec("INSERT INTO qjson_object_item (object_id, key_id, value_id) VALUES (?, ?, ?)",
+        [obj_id, key_vid, vid]);
     }
 
     // Solve
@@ -403,9 +408,10 @@ async function storeValue(val) {
     var obj_id = obj_rows[0].id;
     var keys = Object.keys(val);
     for (var i = 0; i < keys.length; i++) {
+      var key_vid = await storeValue(keys[i]);
       var item_vid = await storeValue(val[keys[i]]);
-      await db.exec("INSERT INTO qjson_object_item (object_id, key, value_id) VALUES (?, ?, ?)",
-        [obj_id, keys[i], item_vid]);
+      await db.exec("INSERT INTO qjson_object_item (object_id, key_id, value_id) VALUES (?, ?, ?)",
+        [obj_id, key_vid, item_vid]);
     }
     return vid;
   }

@@ -220,9 +220,11 @@ static void sb_resolve(sql_builder *sb, path_step *steps, int nsteps,
             snprintf(oi, sizeof(oi), "oi_%d", sb->alias_num);
             dstr_catf(&sb->joins,
                 " JOIN \"%sobject\" %s ON %s.value_id = %s"
-                " JOIN \"%sobject_item\" %s ON %s.object_id = %s.id AND %s.key = '%s'",
+                " JOIN \"%sobject_item\" %s ON %s.object_id = %s.id"
+                " AND %s.key_id IN (SELECT value_id FROM \"%sstring\" WHERE value = '%s')",
                 sb->prefix, o, o, cur.buf,
-                sb->prefix, oi, oi, o, oi, steps[i].val);
+                sb->prefix, oi, oi, o,
+                oi, sb->prefix, steps[i].val);
             cur.len = 0; cur.buf[0] = '\0';
             dstr_catf(&cur, "%s.value_id", oi);
 
@@ -654,21 +656,18 @@ static char *do_reconstruct(sqlite3 *db, sqlite3_int64 vid, const char *prefix) 
 
         dstr_catc(&out, '{');
         sqlite3_free(sql);
-        sql = sqlite3_mprintf("SELECT key, value_id FROM \"%sobject_item\" WHERE object_id = %lld ORDER BY key", prefix, obj_id);
+        sql = sqlite3_mprintf("SELECT key_id, value_id FROM \"%sobject_item\" WHERE object_id = %lld", prefix, obj_id);
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
             int first = 1;
             while (sqlite3_step(stmt) == SQLITE_ROW) {
                 if (!first) dstr_catc(&out, ',');
                 first = 0;
-                const char *key = (const char *)sqlite3_column_text(stmt, 0);
+                sqlite3_int64 kvid = sqlite3_column_int64(stmt, 0);
                 sqlite3_int64 cvid = sqlite3_column_int64(stmt, 1);
-                dstr_catc(&out, '"');
-                for (int i = 0; key && key[i]; i++) {
-                    if (key[i] == '"') dstr_cat(&out, "\\\"");
-                    else if (key[i] == '\\') dstr_cat(&out, "\\\\");
-                    else dstr_catc(&out, key[i]);
-                }
-                dstr_cat(&out, "\":");
+                char *key_str = do_reconstruct(db, kvid, prefix);
+                dstr_cat(&out, key_str);
+                sqlite3_free(key_str);
+                dstr_catc(&out, ':');
                 char *child = do_reconstruct(db, cvid, prefix);
                 dstr_cat(&out, child);
                 sqlite3_free(child);

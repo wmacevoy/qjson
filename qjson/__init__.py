@@ -9,7 +9,7 @@ Usage:
 import importlib.util as _ilu
 import os as _os
 
-__version__ = "1.1.0"
+__version__ = "1.1.2"
 
 # Load src/qjson.py directly to avoid circular import with this package
 _src_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), '..', 'src', 'qjson.py')
@@ -24,6 +24,7 @@ BigInt = _mod.BigInt
 BigFloat = _mod.BigFloat
 Blob = _mod.Blob
 Unbound = _mod.Unbound
+QMap = _mod.QMap
 is_json = _mod.is_json
 is_bound = _mod.is_bound
 js64_encode = _mod.js64_encode
@@ -32,6 +33,6 @@ qjson_parse = _mod.qjson_parse if hasattr(_mod, 'qjson_parse') else _mod.parse
 qjson_stringify = _mod.qjson_stringify if hasattr(_mod, 'qjson_stringify') else _mod.stringify
 
 __all__ = [
-    "parse", "stringify", "BigInt", "BigFloat", "Blob", "Unbound",
+    "parse", "stringify", "BigInt", "BigFloat", "Blob", "Unbound", "QMap",
     "is_json", "is_bound", "js64_encode", "js64_decode",
 ]

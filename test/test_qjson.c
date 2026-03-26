@@ -707,6 +707,153 @@ static void benchmark(void) {
     }
 }
 
+/* -- Complex keys + set shorthand -------------------------------- */
+
+static void test_complex_keys(void) {
+    printf("\n=== Complex keys + set shorthand ===\n");
+    qjson_arena a; qjson_arena_init(&a, arena_buf, sizeof(arena_buf));
+    char out[2048];
+
+    /* Bare identifier as value */
+    qjson_val *v = qjson_parse(&a, "alice", 5);
+    TEST("bare ident value", v && v->type == QJSON_STRING &&
+         v->str.len == 5 && memcmp(v->str.s, "alice", 5) == 0);
+
+    /* Bare idents in array */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "[alice, bob]", 12);
+    TEST("bare ident array", v && v->type == QJSON_ARRAY && v->arr.count == 2);
+    TEST("bare ident arr[0]", v->arr.items[0]->type == QJSON_STRING &&
+         strcmp(v->arr.items[0]->str.s, "alice") == 0);
+    TEST("bare ident arr[1]", v->arr.items[1]->type == QJSON_STRING &&
+         strcmp(v->arr.items[1]->str.s, "bob") == 0);
+
+    /* Keyword boundary: truthy != true */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "truthy", 6);
+    TEST("truthy is string", v && v->type == QJSON_STRING &&
+         strcmp(v->str.s, "truthy") == 0);
+
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "nullable", 8);
+    TEST("nullable is string", v && v->type == QJSON_STRING &&
+         strcmp(v->str.s, "nullable") == 0);
+
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "falsehood", 9);
+    TEST("falsehood is string", v && v->type == QJSON_STRING &&
+         strcmp(v->str.s, "falsehood") == 0);
+
+    /* Set shorthand: {alice, bob} */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{alice, bob, carol}", 19);
+    TEST("set shorthand parse", v && v->type == QJSON_OBJECT && v->obj.count == 3);
+    TEST("set key[0] string", v->obj.pairs[0].key->type == QJSON_STRING &&
+         strcmp(v->obj.pairs[0].key->str.s, "alice") == 0);
+    TEST("set val[0] true", v->obj.pairs[0].val->type == QJSON_TRUE);
+    TEST("set key[2] string", v->obj.pairs[2].key->type == QJSON_STRING &&
+         strcmp(v->obj.pairs[2].key->str.s, "carol") == 0);
+
+    /* Set shorthand stringify */
+    int n = qjson_stringify(v, out, sizeof(out));
+    TEST("set shorthand stringify", n > 0 && strcmp(out, "{alice,bob,carol}") == 0);
+
+    /* Complex key: number */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{42: \"answer\"}", 14);
+    TEST("number key parse", v && v->type == QJSON_OBJECT && v->obj.count == 1);
+    TEST("number key type", v->obj.pairs[0].key->type == QJSON_NUM &&
+         v->obj.pairs[0].key->num == 42.0);
+    TEST("number key value", v->obj.pairs[0].val->type == QJSON_STRING &&
+         strcmp(v->obj.pairs[0].val->str.s, "answer") == 0);
+
+    /* Complex key: array */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{[1,2]: \"pair\"}", 15);
+    TEST("array key parse", v && v->type == QJSON_OBJECT && v->obj.count == 1);
+    TEST("array key type", v->obj.pairs[0].key->type == QJSON_ARRAY &&
+         v->obj.pairs[0].key->arr.count == 2);
+
+    /* Complex key: boolean */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{true: 1}", 9);
+    TEST("boolean key parse", v && v->type == QJSON_OBJECT && v->obj.count == 1);
+    TEST("boolean key type", v->obj.pairs[0].key->type == QJSON_TRUE);
+
+    /* Complex key: null */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{null: 1}", 9);
+    TEST("null key parse", v && v->type == QJSON_OBJECT && v->obj.count == 1);
+    TEST("null key type", v->obj.pairs[0].key->type == QJSON_NULL);
+
+    /* Complex key: unbound */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{?X: 42}", 8);
+    TEST("unbound key parse", v && v->type == QJSON_OBJECT && v->obj.count == 1);
+    TEST("unbound key type", v->obj.pairs[0].key->type == QJSON_UNBOUND);
+
+    /* Set of arrays (Datalog tuples) */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{[1,2], [3,4]}", 14);
+    TEST("set of arrays", v && v->type == QJSON_OBJECT && v->obj.count == 2);
+    TEST("set arr key[0]", v->obj.pairs[0].key->type == QJSON_ARRAY);
+    TEST("set arr val[0] true", v->obj.pairs[0].val->type == QJSON_TRUE);
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("set of arrays stringify", strcmp(out, "{[1,2],[3,4]}") == 0);
+
+    /* Trailing comma in set */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{a, b,}", 7);
+    TEST("trailing comma set", v && v->type == QJSON_OBJECT && v->obj.count == 2);
+
+    /* Mixed map with string and non-string keys */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{name: 1, 42: 2}", 16);
+    TEST("mixed keys parse", v && v->type == QJSON_OBJECT && v->obj.count == 2);
+    TEST("mixed key[0] string", v->obj.pairs[0].key->type == QJSON_STRING);
+    TEST("mixed key[1] number", v->obj.pairs[1].key->type == QJSON_NUM);
+
+    /* Map syntax stringify (string keys quoted) */
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("mixed keys stringify", strcmp(out, "{\"name\":1,42:2}") == 0);
+
+    /* Backward compat: string-key object round-trip */
+    qjson_arena_reset(&a);
+    const char *s = "{\"x\":1,\"y\":2}";
+    v = qjson_parse(&a, s, (int)strlen(s));
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("string key round-trip", strcmp(out, s) == 0);
+
+    /* is_json with complex keys */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{42: 1}", 7);
+    TEST("is_json complex key", !qjson_is_json(v));
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{name: 1}", 9);
+    TEST("is_json string key", qjson_is_json(v));
+
+    /* is_bound with unbound key */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{?X: 42}", 8);
+    TEST("is_bound unbound key", !qjson_is_bound(v));
+
+    /* obj_get still works for string keys */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{name: alice, age: 30}", 22);
+    qjson_val *got = qjson_obj_get(v, "name");
+    TEST("obj_get string key", got && got->type == QJSON_STRING &&
+         strcmp(got->str.s, "alice") == 0);
+    got = qjson_obj_get(v, "age");
+    TEST("obj_get number val", got && got->type == QJSON_NUM && got->num == 30.0);
+
+    /* Empty object is still {} */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{}", 2);
+    TEST("empty object", v && v->type == QJSON_OBJECT && v->obj.count == 0);
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("empty object stringify", strcmp(out, "{}") == 0);
+}
+
 /* -- Main ----------------------------------------------------- */
 
 int main(void) {
@@ -723,6 +870,7 @@ int main(void) {
     test_parse_blob();
     test_parse_unbound();
     test_cmp_fix();
+    test_complex_keys();
     benchmark();
 
     printf("\n%d/%d tests passed\n", pass, pass + fail);

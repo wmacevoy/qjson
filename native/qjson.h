@@ -31,8 +31,7 @@ typedef enum {
 typedef struct qjson_val qjson_val;
 
 typedef struct {
-    const char *key;
-    int         key_len;
+    qjson_val  *key;
     qjson_val  *val;
 } qjson_kv;
 

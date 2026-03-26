@@ -395,24 +395,22 @@ static qjson_val *parse_object(pstate *p) {
     if (peek(p) == '}') { p->pos++; goto done; }
     for (;;) {
         skip_ws(p);
-        /* Key: quoted string or bare identifier */
-        const char *key; int key_len;
-        if (peek(p) == '"') {
-            qjson_val *ks = parse_string_val(p);
-            if (!ks) return NULL;
-            key = ks->str.s; key_len = ks->str.len;
-        } else {
-            key = parse_ident(p, &key_len);
-            if (!key) return NULL;
-        }
+        /* Key: any QJSON value expression */
+        qjson_val *key = parse_value(p);
+        if (!key) return NULL;
         skip_ws(p);
-        if (peek(p) != ':') return NULL;
-        p->pos++;
-        qjson_val *val = parse_value(p);
-        if (!val) return NULL;
+        qjson_val *val;
+        if (peek(p) == ':') {
+            p->pos++;
+            val = parse_value(p);
+            if (!val) return NULL;
+        } else {
+            /* Set shorthand: value defaults to true */
+            val = make_val(p, QJSON_TRUE);
+            if (!val) return NULL;
+        }
         if (count < 128) {
             pairs[count].key = key;
-            pairs[count].key_len = key_len;
             pairs[count].val = val;
             count++;
         }
@@ -470,20 +468,41 @@ static qjson_val *parse_unbound(pstate *p) {
 
 /* ── Value dispatch ──────────────────────────────────────── */
 
+/* Check if text at pos is exactly a keyword (not part of a longer identifier). */
+static int is_kw(pstate *p, const char *word, int wlen) {
+    if (p->pos + wlen > p->len) return 0;
+    if (memcmp(p->s + p->pos, word, wlen) != 0) return 0;
+    if (p->pos + wlen < p->len) {
+        char nc = p->s[p->pos + wlen];
+        if ((nc >= 'a' && nc <= 'z') || (nc >= 'A' && nc <= 'Z') ||
+            (nc >= '0' && nc <= '9') || nc == '_' || nc == '$') return 0;
+    }
+    return 1;
+}
+
 static qjson_val *parse_value(pstate *p) {
     skip_ws(p);
     char c = peek(p);
     if (c == '"') return parse_string_val(p);
     if (c == '{') return parse_object(p);
     if (c == '[') return parse_array(p);
-    if (c == 't' && p->pos + 4 <= p->len && memcmp(p->s + p->pos, "true", 4) == 0)
+    if (c == 't' && is_kw(p, "true", 4))
         { p->pos += 4; return make_val(p, QJSON_TRUE); }
-    if (c == 'f' && p->pos + 5 <= p->len && memcmp(p->s + p->pos, "false", 5) == 0)
+    if (c == 'f' && is_kw(p, "false", 5))
         { p->pos += 5; return make_val(p, QJSON_FALSE); }
-    if (c == 'n' && p->pos + 4 <= p->len && memcmp(p->s + p->pos, "null", 4) == 0)
+    if (c == 'n' && is_kw(p, "null", 4))
         { p->pos += 4; return make_val(p, QJSON_NULL); }
     if (c == '-' || (c >= '0' && c <= '9')) return parse_number(p);
     if (c == '?') return parse_unbound(p);
+    /* Bare identifier → string */
+    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$') {
+        int ident_len;
+        char *id = parse_ident(p, &ident_len);
+        if (!id) return NULL;
+        qjson_val *v = make_val(p, QJSON_STRING);
+        if (v) { v->str.s = id; v->str.len = ident_len; }
+        return v;
+    }
     return NULL;
 }
 
@@ -509,8 +528,12 @@ int qjson_is_json(const qjson_val *v) {
             if (!qjson_is_json(v->arr.items[i])) return 0;
         return 1;
     case QJSON_OBJECT:
-        for (int i = 0; i < v->obj.count; i++)
+        for (int i = 0; i < v->obj.count; i++) {
+            /* JSON requires string keys */
+            if (!v->obj.pairs[i].key || v->obj.pairs[i].key->type != QJSON_STRING)
+                return 0;
             if (!qjson_is_json(v->obj.pairs[i].val)) return 0;
+        }
         return 1;
     default: /* BIGINT, BIGDEC, BIGFLOAT, BLOB, UNBOUND */
         return 0;
@@ -525,8 +548,10 @@ int qjson_is_bound(const qjson_val *v) {
             if (!qjson_is_bound(v->arr.items[i])) return 0;
     }
     if (v->type == QJSON_OBJECT) {
-        for (int i = 0; i < v->obj.count; i++)
+        for (int i = 0; i < v->obj.count; i++) {
+            if (!qjson_is_bound(v->obj.pairs[i].key)) return 0;
             if (!qjson_is_bound(v->obj.pairs[i].val)) return 0;
+        }
     }
     return 1;
 }
@@ -618,15 +643,55 @@ static int stringify_val(const qjson_val *v, char *buf, int pos, int cap) {
             pos = stringify_val(v->arr.items[i], buf, pos, cap);
         }
         return emit_char(buf, pos, cap, ']');
-    case QJSON_OBJECT:
+    case QJSON_OBJECT: {
         pos = emit_char(buf, pos, cap, '{');
+        /* Check if set shorthand (all values are TRUE) */
+        int is_set = 1;
+        for (int i = 0; i < v->obj.count; i++) {
+            if (!v->obj.pairs[i].val || v->obj.pairs[i].val->type != QJSON_TRUE)
+                { is_set = 0; break; }
+        }
         for (int i = 0; i < v->obj.count; i++) {
             if (i > 0) pos = emit_char(buf, pos, cap, ',');
-            pos = emit_str_escaped(buf, pos, cap, v->obj.pairs[i].key, v->obj.pairs[i].key_len);
-            pos = emit_char(buf, pos, cap, ':');
-            pos = stringify_val(v->obj.pairs[i].val, buf, pos, cap);
+            qjson_val *key = v->obj.pairs[i].key;
+            if (is_set) {
+                /* Set shorthand: use bare ident for simple string keys */
+                if (key && key->type == QJSON_STRING) {
+                    int bare = 1;
+                    if (key->str.len == 0) bare = 0;
+                    else {
+                        char c0 = key->str.s[0];
+                        if (!((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_' || c0 == '$'))
+                            bare = 0;
+                        if (bare) {
+                            for (int j = 1; j < key->str.len; j++) {
+                                char cj = key->str.s[j];
+                                if (!((cj >= 'a' && cj <= 'z') || (cj >= 'A' && cj <= 'Z') ||
+                                      (cj >= '0' && cj <= '9') || cj == '_' || cj == '$'))
+                                    { bare = 0; break; }
+                            }
+                        }
+                        if (bare && key->str.len == 4 && memcmp(key->str.s, "true", 4) == 0) bare = 0;
+                        if (bare && key->str.len == 4 && memcmp(key->str.s, "null", 4) == 0) bare = 0;
+                        if (bare && key->str.len == 5 && memcmp(key->str.s, "false", 5) == 0) bare = 0;
+                    }
+                    if (bare) pos = emit(buf, pos, cap, key->str.s, key->str.len);
+                    else pos = emit_str_escaped(buf, pos, cap, key->str.s, key->str.len);
+                } else {
+                    pos = stringify_val(key, buf, pos, cap);
+                }
+            } else {
+                /* Map syntax: string keys always quoted, non-string keys serialized as values */
+                if (key && key->type == QJSON_STRING)
+                    pos = emit_str_escaped(buf, pos, cap, key->str.s, key->str.len);
+                else
+                    pos = stringify_val(key, buf, pos, cap);
+                pos = emit_char(buf, pos, cap, ':');
+                pos = stringify_val(v->obj.pairs[i].val, buf, pos, cap);
+            }
         }
         return emit_char(buf, pos, cap, '}');
+    }
     }
     return pos;
 }
@@ -641,10 +706,11 @@ int qjson_stringify(const qjson_val *v, char *buf, int cap) {
 
 qjson_val *qjson_obj_get(const qjson_val *v, const char *key) {
     if (!v || v->type != QJSON_OBJECT) return NULL;
-    int klen = strlen(key);
+    int klen = (int)strlen(key);
     for (int i = 0; i < v->obj.count; i++) {
-        if (v->obj.pairs[i].key_len == klen &&
-            memcmp(v->obj.pairs[i].key, key, klen) == 0)
+        qjson_val *k = v->obj.pairs[i].key;
+        if (k && k->type == QJSON_STRING &&
+            k->str.len == klen && memcmp(k->str.s, key, klen) == 0)
             return v->obj.pairs[i].val;
     }
     return NULL;

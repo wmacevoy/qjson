@@ -110,15 +110,17 @@ class _QueryBuilder:
 
         for step_type, step_val in steps:
             if step_type == _TOK_DOT_KEY:
-                # JOIN object → object_item WHERE key = ?
+                # JOIN object → object_item with subquery key lookup
                 o = self._alias("o")
                 oi = self._alias("oi")
                 self._joins.append(
                     'JOIN %s %s ON %s.value_id = %s' % (
                         self._t("object"), o, o, current_vid))
                 self._joins.append(
-                    'JOIN %s %s ON %s.object_id = %s.id AND %s.key = %s' % (
-                        self._t("object_item"), oi, oi, o, oi, self.P))
+                    'JOIN %s %s ON %s.object_id = %s.id'
+                    ' AND %s.key_id IN (SELECT value_id FROM %s WHERE value = %s)' % (
+                        self._t("object_item"), oi, oi, o,
+                        oi, self._t("string"), self.P))
                 self._params.append(step_val)
                 current_vid = "%s.value_id" % oi
 

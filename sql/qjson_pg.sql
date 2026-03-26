@@ -280,12 +280,11 @@ BEGIN
 
         parts := '{}';
         FOR rec IN EXECUTE format(
-            'SELECT key, value_id FROM %I WHERE object_id = $1 ORDER BY key',
+            'SELECT key_id, value_id FROM %I WHERE object_id = $1',
             p_prefix || 'object_item')
             USING obj_id
         LOOP
-            -- Keys are always quoted in canonical form
-            parts := parts || ('"' || replace(replace(rec.key, '\', '\\'), '"', '\"') || '":' ||
+            parts := parts || (qjson_reconstruct(rec.key_id, p_prefix) || ':' ||
                                qjson_reconstruct(rec.value_id, p_prefix));
         END LOOP;
         RETURN '{' || array_to_string(parts, ',') || '}';
@@ -425,8 +424,8 @@ BEGIN
             oi_alias := 'oi_' || alias_num;
             join_clauses := join_clauses ||
                 format(' JOIN %s %s ON %s.value_id = %s', t_object, o_alias, o_alias, current_vid) ||
-                format(' JOIN %s %s ON %s.object_id = %s.id AND %s.key = %L',
-                       t_object_item, oi_alias, oi_alias, o_alias, oi_alias, step.step_val);
+                format(' JOIN %s %s ON %s.object_id = %s.id AND %s.key_id IN (SELECT value_id FROM %s WHERE value = %L)',
+                       t_object_item, oi_alias, oi_alias, o_alias, oi_alias, t_string, step.step_val);
             current_vid := oi_alias || '.value_id';
 
         ELSIF step.step_type = 'index' THEN
@@ -644,8 +643,8 @@ BEGIN
                     oi_alias := 'woi_' || p_alias_num;
                     join_sql := join_sql ||
                         format(' JOIN %s %s ON %s.value_id = %s', t_object, o_alias, o_alias, current_vid) ||
-                        format(' JOIN %s %s ON %s.object_id = %s.id AND %s.key = %L',
-                               t_object_item, oi_alias, oi_alias, o_alias, oi_alias, step.step_val);
+                        format(' JOIN %s %s ON %s.object_id = %s.id AND %s.key_id IN (SELECT value_id FROM %s WHERE value = %L)',
+                               t_object_item, oi_alias, oi_alias, o_alias, oi_alias, t_string, step.step_val);
                     current_vid := oi_alias || '.value_id';
                 ELSIF step.step_type = 'index' THEN
                     a_alias  := 'wa_'  || p_alias_num;
@@ -801,6 +800,7 @@ DECLARE
     o_alias      TEXT;
     oi_alias     TEXT;
     t_value      TEXT;
+    t_string     TEXT;
     t_object     TEXT;
     t_object_item TEXT;
     t_array      TEXT;
@@ -810,6 +810,7 @@ DECLARE
     rec          RECORD;
 BEGIN
     t_value       := quote_ident(p_prefix || 'value');
+    t_string      := quote_ident(p_prefix || 'string');
     t_object      := quote_ident(p_prefix || 'object');
     t_object_item := quote_ident(p_prefix || 'object_item');
     t_array       := quote_ident(p_prefix || 'array');
@@ -826,8 +827,8 @@ BEGIN
             oi_alias := 'oi_' || alias_num;
             join_clauses := join_clauses ||
                 format(' JOIN %s %s ON %s.value_id = %s', t_object, o_alias, o_alias, current_vid) ||
-                format(' JOIN %s %s ON %s.object_id = %s.id AND %s.key = %L',
-                       t_object_item, oi_alias, oi_alias, o_alias, oi_alias, step.step_val);
+                format(' JOIN %s %s ON %s.object_id = %s.id AND %s.key_id IN (SELECT value_id FROM %s WHERE value = %L)',
+                       t_object_item, oi_alias, oi_alias, o_alias, oi_alias, t_string, step.step_val);
             current_vid := oi_alias || '.value_id';
         ELSIF step.step_type = 'index' THEN
             a_alias  := 'a_'  || alias_num;
@@ -974,9 +975,10 @@ BEGIN
         'JOIN %I o ON oi.object_id = o.id '
         'JOIN %I v ON v.id = oi.value_id '
         'JOIN %I root ON o.value_id = root.id '
-        'WHERE root.id = $1 AND oi.key = $2',
+        'WHERE root.id = $1 AND oi.key_id IN (SELECT value_id FROM %I WHERE value = $2)',
         p_prefix || 'object_item', p_prefix || 'object',
-        p_prefix || 'value', p_prefix || 'value')
+        p_prefix || 'value', p_prefix || 'value',
+        p_prefix || 'string')
     INTO target_vid, target_type
     USING p_root_id, key_name;
 
@@ -999,9 +1001,10 @@ BEGIN
                 'JOIN %I n ON n.value_id = oi.value_id '
                 'JOIN %I v ON v.id = oi.value_id '
                 'JOIN %I root ON o.value_id = root.id '
-                'WHERE root.id = $1 AND oi.key = $2 AND v.type != ''unbound''',
+                'WHERE root.id = $1 AND oi.key_id IN (SELECT value_id FROM %I WHERE value = $2) AND v.type != ''unbound''',
                 p_prefix || 'object_item', p_prefix || 'object',
-                p_prefix || 'number', p_prefix || 'value', p_prefix || 'value')
+                p_prefix || 'number', p_prefix || 'value', p_prefix || 'value',
+                p_prefix || 'string')
             INTO path_val
             USING p_root_id, path_name;
         EXCEPTION WHEN OTHERS THEN
