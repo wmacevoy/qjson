@@ -65,4 +65,28 @@ int qjson_shamir_recover(const int *indices, const char **keys_hex,
                          int count, int target, const char *prime_hex,
                          char *out_hex, size_t out_size);
 
+/* ── Base64 / Base64url ──────────────────────────────────── */
+
+/* Standard base64 encode. Returns malloc'd string. */
+char *qjson_base64_encode(const void *data, size_t len);
+
+/* Standard base64 decode. Returns malloc'd buffer, sets *out_len. */
+void *qjson_base64_decode(const char *b64, size_t b64_len, size_t *out_len);
+
+/* URL-safe base64 (no padding). Returns malloc'd string. */
+char *qjson_base64url_encode(const void *data, size_t len);
+
+/* URL-safe base64 decode. Returns malloc'd buffer, sets *out_len. */
+void *qjson_base64url_decode(const char *b64, size_t b64_len, size_t *out_len);
+
+/* ── JWT (HS256) ─────────────────────────────────────────── */
+
+/* Sign payload JSON with secret. Returns malloc'd JWT string. */
+char *qjson_jwt_sign(const char *payload, size_t payload_len,
+                     const void *secret, size_t secret_len);
+
+/* Verify JWT and return malloc'd payload JSON, or NULL on failure. */
+char *qjson_jwt_verify(const char *jwt, size_t jwt_len,
+                       const void *secret, size_t secret_len);
+
 #endif

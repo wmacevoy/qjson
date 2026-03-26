@@ -2290,6 +2290,70 @@ static void sql_shamir_recover(sqlite3_context *ctx, int argc, sqlite3_value **a
     sqlite3_result_text(ctx, out, -1, SQLITE_TRANSIENT);
 }
 
+static void sql_base64_encode(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const void *data = sqlite3_value_blob(argv[0]);
+    int len = sqlite3_value_bytes(argv[0]);
+    if (!data) { sqlite3_result_null(ctx); return; }
+    char *out = qjson_base64_encode(data, len);
+    sqlite3_result_text(ctx, out, -1, free);
+}
+
+static void sql_base64_decode(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const char *b64 = (const char *)sqlite3_value_text(argv[0]);
+    int len = sqlite3_value_bytes(argv[0]);
+    if (!b64) { sqlite3_result_null(ctx); return; }
+    size_t out_len;
+    void *out = qjson_base64_decode(b64, len, &out_len);
+    if (!out) { sqlite3_result_null(ctx); return; }
+    sqlite3_result_blob(ctx, out, (int)out_len, free);
+}
+
+static void sql_base64url_encode(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const void *data = sqlite3_value_blob(argv[0]);
+    int len = sqlite3_value_bytes(argv[0]);
+    if (!data) { sqlite3_result_null(ctx); return; }
+    char *out = qjson_base64url_encode(data, len);
+    sqlite3_result_text(ctx, out, -1, free);
+}
+
+static void sql_base64url_decode(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const char *b64 = (const char *)sqlite3_value_text(argv[0]);
+    int len = sqlite3_value_bytes(argv[0]);
+    if (!b64) { sqlite3_result_null(ctx); return; }
+    size_t out_len;
+    void *out = qjson_base64url_decode(b64, len, &out_len);
+    if (!out) { sqlite3_result_null(ctx); return; }
+    sqlite3_result_blob(ctx, out, (int)out_len, free);
+}
+
+static void sql_jwt_sign(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const char *payload = (const char *)sqlite3_value_text(argv[0]);
+    int pay_len = sqlite3_value_bytes(argv[0]);
+    const void *secret = sqlite3_value_blob(argv[1]);
+    int sec_len = sqlite3_value_bytes(argv[1]);
+    if (!payload || !secret) { sqlite3_result_null(ctx); return; }
+    char *jwt = qjson_jwt_sign(payload, pay_len, secret, sec_len);
+    if (!jwt) { sqlite3_result_null(ctx); return; }
+    sqlite3_result_text(ctx, jwt, -1, free);
+}
+
+static void sql_jwt_verify(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    (void)argc;
+    const char *jwt = (const char *)sqlite3_value_text(argv[0]);
+    int jwt_len = sqlite3_value_bytes(argv[0]);
+    const void *secret = sqlite3_value_blob(argv[1]);
+    int sec_len = sqlite3_value_bytes(argv[1]);
+    if (!jwt || !secret) { sqlite3_result_null(ctx); return; }
+    char *payload = qjson_jwt_verify(jwt, jwt_len, secret, sec_len);
+    if (!payload) { sqlite3_result_null(ctx); return; }
+    sqlite3_result_text(ctx, payload, -1, free);
+}
+
 #endif /* QJSON_USE_CRYPTO */
 
 /* ── Extension entry point ──────────────────────────────── */
@@ -2373,6 +2437,12 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
     sqlite3_create_function(db, "qjson_hkdf",       4, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_hkdf, NULL, NULL);
     sqlite3_create_function(db, "qjson_shamir_split",   3, SQLITE_UTF8, NULL, sql_shamir_split, NULL, NULL);
     sqlite3_create_function(db, "qjson_shamir_recover", 2, SQLITE_UTF8, NULL, sql_shamir_recover, NULL, NULL);
+    sqlite3_create_function(db, "qjson_base64_encode",    1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_base64_encode, NULL, NULL);
+    sqlite3_create_function(db, "qjson_base64_decode",    1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_base64_decode, NULL, NULL);
+    sqlite3_create_function(db, "qjson_base64url_encode", 1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_base64url_encode, NULL, NULL);
+    sqlite3_create_function(db, "qjson_base64url_decode", 1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_base64url_decode, NULL, NULL);
+    sqlite3_create_function(db, "qjson_jwt_sign",   2, SQLITE_UTF8, NULL, sql_jwt_sign, NULL, NULL);
+    sqlite3_create_function(db, "qjson_jwt_verify", 2, SQLITE_UTF8, NULL, sql_jwt_verify, NULL, NULL);
 #endif
 
     /* Register qjson_select as eponymous table-valued function */

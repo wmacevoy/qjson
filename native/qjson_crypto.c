@@ -398,3 +398,168 @@ int qjson_shamir_recover(const int *indices, const char **keys_hex, int count,
     bf_context_end(&ctx);
     return rc;
 }
+
+/* ── Base64 ──────────────────────────────────────────────── */
+
+static const char _b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static const char _b64url[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+static char *_b64_encode(const void *data, size_t len, const char *alpha, int pad) {
+    const unsigned char *d = (const unsigned char *)data;
+    size_t out_len = ((len + 2) / 3) * 4;
+    if (!pad) { /* trim padding */
+        out_len = ((len * 4) + 2) / 3;
+    }
+    char *out = malloc(out_len + 1);
+    if (!out) return NULL;
+    size_t i = 0, o = 0;
+    while (i + 2 < len) {
+        unsigned int v = ((unsigned int)d[i] << 16) | ((unsigned int)d[i+1] << 8) | d[i+2];
+        out[o++] = alpha[(v >> 18) & 0x3F];
+        out[o++] = alpha[(v >> 12) & 0x3F];
+        out[o++] = alpha[(v >> 6) & 0x3F];
+        out[o++] = alpha[v & 0x3F];
+        i += 3;
+    }
+    if (i < len) {
+        unsigned int v = (unsigned int)d[i] << 16;
+        if (i + 1 < len) v |= (unsigned int)d[i+1] << 8;
+        out[o++] = alpha[(v >> 18) & 0x3F];
+        out[o++] = alpha[(v >> 12) & 0x3F];
+        if (i + 1 < len) out[o++] = alpha[(v >> 6) & 0x3F];
+        else if (pad) out[o++] = '=';
+        if (pad) out[o++] = '=';
+    }
+    out[o] = '\0';
+    return out;
+}
+
+static unsigned char _b64_val(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+' || c == '-') return 62;
+    if (c == '/' || c == '_') return 63;
+    return 0xFF;
+}
+
+static void *_b64_decode(const char *b64, size_t b64_len, size_t *out_len) {
+    /* Strip padding */
+    while (b64_len > 0 && b64[b64_len - 1] == '=') b64_len--;
+    size_t n = (b64_len * 3) / 4;
+    unsigned char *out = malloc(n + 1);
+    if (!out) return NULL;
+    size_t i = 0, o = 0;
+    while (i + 3 < b64_len) {
+        unsigned int v = ((unsigned int)_b64_val(b64[i]) << 18) |
+                         ((unsigned int)_b64_val(b64[i+1]) << 12) |
+                         ((unsigned int)_b64_val(b64[i+2]) << 6) |
+                         _b64_val(b64[i+3]);
+        out[o++] = (v >> 16) & 0xFF;
+        out[o++] = (v >> 8) & 0xFF;
+        out[o++] = v & 0xFF;
+        i += 4;
+    }
+    if (i + 1 < b64_len) {
+        unsigned int v = ((unsigned int)_b64_val(b64[i]) << 18) |
+                         ((unsigned int)_b64_val(b64[i+1]) << 12);
+        if (i + 2 < b64_len) v |= ((unsigned int)_b64_val(b64[i+2]) << 6);
+        out[o++] = (v >> 16) & 0xFF;
+        if (i + 2 < b64_len) out[o++] = (v >> 8) & 0xFF;
+    }
+    *out_len = o;
+    return out;
+}
+
+char *qjson_base64_encode(const void *data, size_t len) {
+    return _b64_encode(data, len, _b64, 1);
+}
+
+void *qjson_base64_decode(const char *b64, size_t b64_len, size_t *out_len) {
+    return _b64_decode(b64, b64_len, out_len);
+}
+
+char *qjson_base64url_encode(const void *data, size_t len) {
+    return _b64_encode(data, len, _b64url, 0);
+}
+
+void *qjson_base64url_decode(const char *b64, size_t b64_len, size_t *out_len) {
+    return _b64_decode(b64, b64_len, out_len);
+}
+
+/* ── JWT HS256 ───────────────────────────────────────────── */
+
+static const char _jwt_header[] = "{\"alg\":\"HS256\",\"typ\":\"JWT\"}";
+
+char *qjson_jwt_sign(const char *payload, size_t payload_len,
+                     const void *secret, size_t secret_len) {
+    char *hdr_b64 = qjson_base64url_encode(_jwt_header, strlen(_jwt_header));
+    char *pay_b64 = qjson_base64url_encode(payload, payload_len);
+    if (!hdr_b64 || !pay_b64) { free(hdr_b64); free(pay_b64); return NULL; }
+
+    /* signing_input = header.payload */
+    size_t hlen = strlen(hdr_b64), plen = strlen(pay_b64);
+    size_t input_len = hlen + 1 + plen;
+    char *input = malloc(input_len + 1);
+    memcpy(input, hdr_b64, hlen);
+    input[hlen] = '.';
+    memcpy(input + hlen + 1, pay_b64, plen);
+    input[input_len] = '\0';
+
+    /* HMAC-SHA256 */
+    unsigned char mac[32];
+    qjson_hmac_sha256(input, input_len, secret, secret_len, mac);
+    char *sig_b64 = qjson_base64url_encode(mac, 32);
+
+    /* jwt = header.payload.signature */
+    size_t slen = strlen(sig_b64);
+    char *jwt = malloc(input_len + 1 + slen + 1);
+    memcpy(jwt, input, input_len);
+    jwt[input_len] = '.';
+    memcpy(jwt + input_len + 1, sig_b64, slen);
+    jwt[input_len + 1 + slen] = '\0';
+
+    free(hdr_b64); free(pay_b64); free(input); free(sig_b64);
+    return jwt;
+}
+
+char *qjson_jwt_verify(const char *jwt, size_t jwt_len,
+                       const void *secret, size_t secret_len) {
+    /* Find the two dots */
+    const char *dot1 = memchr(jwt, '.', jwt_len);
+    if (!dot1) return NULL;
+    const char *dot2 = memchr(dot1 + 1, '.', jwt_len - (dot1 + 1 - jwt));
+    if (!dot2) return NULL;
+
+    size_t input_len = dot2 - jwt;  /* header.payload */
+    const char *sig_b64 = dot2 + 1;
+    size_t sig_b64_len = jwt_len - input_len - 1;
+
+    /* Recompute HMAC */
+    unsigned char mac[32];
+    qjson_hmac_sha256(jwt, input_len, secret, secret_len, mac);
+    char *expected = qjson_base64url_encode(mac, 32);
+    if (!expected) return NULL;
+
+    /* Constant-time compare */
+    int ok = (strlen(expected) == sig_b64_len);
+    if (ok) {
+        volatile unsigned char diff = 0;
+        for (size_t i = 0; i < sig_b64_len; i++)
+            diff |= (unsigned char)expected[i] ^ (unsigned char)sig_b64[i];
+        ok = (diff == 0);
+    }
+    free(expected);
+    if (!ok) return NULL;
+
+    /* Decode payload */
+    const char *pay_b64 = dot1 + 1;
+    size_t pay_b64_len = dot2 - pay_b64;
+    size_t pay_len;
+    char *payload = qjson_base64url_decode(pay_b64, pay_b64_len, &pay_len);
+    if (!payload) return NULL;
+    /* Null-terminate */
+    payload = realloc(payload, pay_len + 1);
+    payload[pay_len] = '\0';
+    return payload;
+}
