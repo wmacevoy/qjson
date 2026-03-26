@@ -202,3 +202,25 @@ jobs:
           cipher_status = 'SQLCipher (encrypted)' if HAS_CIPHER else 'sqlite3 (key no-op)'
           print('SQLCipher round-trip: ALL PASSED (%s)' % cipher_status)
           "
+
+  # ── E2E browser tests (Playwright) ────────────────────────
+  e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Playwright
+        run: |
+          cd test/e2e
+          npm init -y
+          npm install @playwright/test
+          npx playwright install chromium
+
+      - name: Run e2e tests
+        run: |
+          cd test/e2e
+          npx playwright test

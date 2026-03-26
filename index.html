@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QJSON — JSON + exact numerics + SQL storage</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font: 16px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+         color: #24292e; max-width: 800px; margin: 0 auto; padding: 2em 1em; }
+  h1 { font-size: 2em; margin-bottom: 0.3em; }
+  h1 span { color: #0969da; }
+  h2 { font-size: 1.3em; margin: 1.5em 0 0.5em; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
+  p, ul { margin-bottom: 1em; }
+  ul { padding-left: 1.5em; }
+  li { margin-bottom: 0.3em; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+         background: #f6f8fa; padding: 0.15em 0.4em; border-radius: 3px; font-size: 0.9em; }
+  pre { background: #f6f8fa; padding: 1em; border-radius: 6px; overflow-x: auto;
+        margin-bottom: 1em; font-size: 0.85em; line-height: 1.5; }
+  pre code { background: none; padding: 0; }
+  .install { display: flex; gap: 1em; flex-wrap: wrap; }
+  .install code { font-size: 1em; padding: 0.4em 0.8em; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; margin: 1em 0; }
+  .card { background: #f6f8fa; border-radius: 6px; padding: 1em; }
+  .card h3 { font-size: 1em; margin-bottom: 0.3em; }
+  .card p { font-size: 0.9em; margin-bottom: 0; color: #57606a; }
+  footer { margin-top: 3em; padding-top: 1em; border-top: 1px solid #d0d7de;
+           color: #57606a; font-size: 0.85em; }
+</style>
+</head>
+<body>
+
+<h1>QJSON<span>.</span></h1>
+<p>JSON superset with exact numerics, pattern matching, and SQL storage.</p>
+
+<div class="install">
+  <code>pip install qjson</code>
+  <code>npm install qjson</code>
+</div>
+
+<h2>What it adds</h2>
+<pre><code>{
+  price: 67432.50M,           // BigDecimal -- exact base-10
+  count: 9007199254740993N,   // BigInt -- beyond 2^53
+  query: ?X,                  // unbound -- matches anything
+  key: 0jSGVsbG8,             // blob (JS64 binary)
+  /* nested /* block */ comments */
+}
+
+// Complex keys -- any value can be a key
+{42: "answer", [1, 2]: "pair"}
+
+// Set shorthand -- sugar for {a: true, b: true, ...}
+{alice, bob, carol}
+
+// Datalog facts -- sets of tuples
+{[alice, bob], [bob, carol]}</code></pre>
+
+<p>Valid JSON is valid QJSON. No collisions.</p>
+
+<h2>Features</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Exact arithmetic</h3>
+    <p>17 SQL functions (add, mul, pow, sqrt, sin, ...) backed by libbf. No floating-point surprises.</p>
+  </div>
+  <div class="card">
+    <h3>Interval projection</h3>
+    <p>[lo, str, hi] brackets every value. Indexed range queries with exact fallback.</p>
+  </div>
+  <div class="card">
+    <h3>Constraint solver</h3>
+    <p>Store 3 of 4 values, leave one as <code>?</code>. The solver fills it in via leaf folding.</p>
+  </div>
+  <div class="card">
+    <h3>Transitive closure</h3>
+    <p><code>qjson_closure()</code> computes graph reachability via <code>WITH RECURSIVE</code>.</p>
+  </div>
+  <div class="card">
+    <h3>Complex keys + sets</h3>
+    <p>Any QJSON value as object key. <code>{a, b, c}</code> set shorthand for Datalog predicates.</p>
+  </div>
+  <div class="card">
+    <h3>Encryption at rest</h3>
+    <p>SQLCipher page-level encryption. WASM + OPFS for browser. Encrypted volumes for PostgreSQL.</p>
+  </div>
+</div>
+
+<h2>Get started</h2>
+<ul>
+  <li><a href="docs/tutorial.html">Interactive tutorial</a> (WASM playground)</li>
+  <li><a href="docs/qjson.md">Full documentation</a> (types, grammar, SQL, queries, solver)</li>
+  <li><a href="https://github.com/wmacevoy/qjson">GitHub repository</a></li>
+</ul>
+
+<h2>Install</h2>
+<table style="width:100%; border-collapse:collapse; font-size:0.9em;">
+<tr><td style="padding:0.3em 0.5em;"><strong>Python</strong></td><td><code>pip install qjson</code></td></tr>
+<tr><td style="padding:0.3em 0.5em;"><strong>Node.js</strong></td><td><code>npm install qjson</code></td></tr>
+<tr><td style="padding:0.3em 0.5em;"><strong>PostgreSQL</strong></td><td><code>docker pull ghcr.io/wmacevoy/qjson-postgres</code></td></tr>
+<tr><td style="padding:0.3em 0.5em;"><strong>Browser</strong></td><td><a href="https://github.com/wmacevoy/qjson/releases">WASM release</a></td></tr>
+<tr><td style="padding:0.3em 0.5em;"><strong>C</strong></td><td><code>#include "qjson.h"</code></td></tr>
+</table>
+
+<footer>
+  MIT License.
+  <a href="https://github.com/wmacevoy/qjson">Source</a> &middot;
+  <a href="https://github.com/wmacevoy/qjson/releases">Releases</a>
+</footer>
+
+</body>
+</html>

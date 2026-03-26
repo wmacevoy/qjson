@@ -200,13 +200,45 @@ solves in any direction:</p>
 
 <!-- ═══════════════════════════════════════════════════════ -->
 
-<script src="sqlcipher-api.js"></script>
 <script>
+// Load sqlcipher-api.js: try local first, then wasm/ subdirectory
+function loadScript(src) {
+  return new Promise(function(resolve, reject) {
+    var s = document.createElement("script");
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
 var db = null;
+var wasmBase = "";
 
 async function init() {
+  // Try loading sqlcipher-api.js from several locations
+  var paths = ["sqlcipher-api.js", "wasm/sqlcipher-api.js", "../examples/wasm/sqlcipher-api.js"];
+  var loaded = false;
+  for (var i = 0; i < paths.length; i++) {
+    try {
+      await loadScript(paths[i]);
+      if (typeof SQLCipher !== "undefined") {
+        wasmBase = paths[i].replace("sqlcipher-api.js", "");
+        loaded = true;
+        break;
+      }
+    } catch(e) { /* try next */ }
+  }
+  if (!loaded) {
+    document.getElementById("status").innerHTML =
+      '<span class="err">WASM not found</span>' +
+      '<br><span class="dim">Download <a href="https://github.com/wmacevoy/qjson/releases">WASM release</a>,' +
+      ' extract to docs/wasm/, and serve via HTTP</span>';
+    return;
+  }
   try {
-    db = await SQLCipher.open({ filename: "/tutorial.db", key: "tutorial" });
+    db = await SQLCipher.open({
+      filename: "/tutorial.db", key: "tutorial",
+      workerUrl: wasmBase + "sqlcipher-worker.js"
+    });
     await db.exec("CREATE TABLE IF NOT EXISTS qjson_value (id INTEGER PRIMARY KEY, type TEXT NOT NULL)");
     await db.exec("CREATE TABLE IF NOT EXISTS qjson_number (id INTEGER PRIMARY KEY, value_id INTEGER, lo REAL, str TEXT, hi REAL)");
     await db.exec("CREATE TABLE IF NOT EXISTS qjson_string (id INTEGER PRIMARY KEY, value_id INTEGER, value TEXT)");
@@ -218,9 +250,6 @@ async function init() {
     document.getElementById("status").innerHTML = '<span class="ok">WASM ready</span>';
   } catch(e) {
     document.getElementById("status").innerHTML = '<span class="err">WASM failed: ' + e.message + '</span>';
-    // Fallback: show instructions
-    document.getElementById("status").innerHTML +=
-      '<br><span class="dim">Download WASM from releases and serve locally</span>';
   }
 }
 
