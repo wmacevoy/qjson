@@ -220,6 +220,21 @@ jobs:
           npm install @playwright/test
           npx playwright install chromium
 
+      - name: Download WASM from latest release
+        run: |
+          mkdir -p docs/wasm
+          gh release download --pattern 'qjson-sqlcipher-wasm.tar.gz' --dir /tmp || true
+          if [ -f /tmp/qjson-sqlcipher-wasm.tar.gz ]; then
+            tar xzf /tmp/qjson-sqlcipher-wasm.tar.gz -C docs/wasm
+            echo "QJSON_WASM_AVAILABLE=1" >> $GITHUB_ENV
+            echo "WASM files extracted to docs/wasm/"
+            ls -la docs/wasm/
+          else
+            echo "No WASM release found — WASM tests will be skipped"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Run e2e tests
         run: |
           cd test/e2e
