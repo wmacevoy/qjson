@@ -344,7 +344,102 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
             /* skip whitespace */
             while (pos < len && isspace(expr[pos])) pos++;
 
-            /* value — dynamically collected */
+            /* resolve LHS path */
+            path_step wsteps[32];
+            int nwsteps = parse_path(path_str, wsteps, 32);
+            dstr wvid; dstr_init(&wvid);
+            sb_resolve(sb, wsteps, nwsteps, "root.id", &wvid);
+            free_steps(wsteps, nwsteps);
+            sqlite3_free(path_str);
+
+            /* RHS: path or literal? */
+            if (expr[pos] == '.' || expr[pos] == '[') {
+                /* ── Cross-path comparison: path op path ── */
+                int rstart = pos;
+                while (pos < len && (expr[pos] == '.' || expr[pos] == '[' ||
+                       isalnum(expr[pos]) || expr[pos] == '_' || expr[pos] == ']'))
+                    pos++;
+                char *rhs_path = dstr_extract_range(expr, rstart, pos);
+
+                path_step rsteps[32];
+                int nrsteps = parse_path(rhs_path, rsteps, 32);
+                dstr rvid; dstr_init(&rvid);
+                sb_resolve(sb, rsteps, nrsteps, "root.id", &rvid);
+                free_steps(rsteps, nrsteps);
+                sqlite3_free(rhs_path);
+
+                /* JOIN both sides to value + LEFT JOIN number + LEFT JOIN string */
+                char lv[32], rv[32], ln[32], rn[32], ls[32], rs[32];
+                sb->alias_num++; snprintf(lv, sizeof(lv), "clv_%d", sb->alias_num);
+                sb->alias_num++; snprintf(rv, sizeof(rv), "crv_%d", sb->alias_num);
+                sb->alias_num++; snprintf(ln, sizeof(ln), "cln_%d", sb->alias_num);
+                sb->alias_num++; snprintf(rn, sizeof(rn), "crn_%d", sb->alias_num);
+                sb->alias_num++; snprintf(ls, sizeof(ls), "cls_%d", sb->alias_num);
+                sb->alias_num++; snprintf(rs, sizeof(rs), "crs_%d", sb->alias_num);
+
+                dstr_catf(&sb->joins,
+                    " JOIN \"%svalue\" %s ON %s.id = %s"
+                    " JOIN \"%svalue\" %s ON %s.id = %s"
+                    " LEFT JOIN \"%snumber\" %s ON %s.value_id = %s"
+                    " LEFT JOIN \"%snumber\" %s ON %s.value_id = %s"
+                    " LEFT JOIN \"%sstring\" %s ON %s.value_id = %s"
+                    " LEFT JOIN \"%sstring\" %s ON %s.value_id = %s",
+                    sb->prefix, lv, lv, wvid.buf,
+                    sb->prefix, rv, rv, rvid.buf,
+                    sb->prefix, ln, ln, wvid.buf,
+                    sb->prefix, rn, rn, rvid.buf,
+                    sb->prefix, ls, ls, wvid.buf,
+                    sb->prefix, rs, rs, rvid.buf);
+
+                /* Emit type-dispatched comparison */
+                if (strcmp(op, "==") == 0) {
+                    dstr_catf(out,
+                        " (%s.type = %s.type AND ("
+                        "(%s.type IN ('number','bigint','bigdec','bigfloat','unbound')"
+                        " AND qjson_decimal_cmp("
+                          "COALESCE(%s.str, CAST(%s.lo AS TEXT)),"
+                          "COALESCE(%s.str, CAST(%s.lo AS TEXT))) = 0)"
+                        " OR (%s.type = 'string' AND %s.value = %s.value)"
+                        " OR (%s.type IN ('null','true','false'))"
+                        "))",
+                        lv, rv,
+                        lv, ln, ln, rn, rn,
+                        lv, ls, rs,
+                        lv);
+                } else if (strcmp(op, "!=") == 0) {
+                    dstr_catf(out,
+                        " (%s.type != %s.type OR ("
+                        "(%s.type IN ('number','bigint','bigdec','bigfloat','unbound')"
+                        " AND qjson_decimal_cmp("
+                          "COALESCE(%s.str, CAST(%s.lo AS TEXT)),"
+                          "COALESCE(%s.str, CAST(%s.lo AS TEXT))) != 0)"
+                        " OR (%s.type = 'string' AND %s.value != %s.value)"
+                        "))",
+                        lv, rv,
+                        lv, ln, ln, rn, rn,
+                        lv, ls, rs);
+                } else {
+                    /* Ordering: numeric types only, use qjson_decimal_cmp */
+                    const char *cmp_op;
+                    if (strcmp(op, ">") == 0)       cmp_op = "> 0";
+                    else if (strcmp(op, ">=") == 0)  cmp_op = ">= 0";
+                    else if (strcmp(op, "<") == 0)   cmp_op = "< 0";
+                    else                            cmp_op = "<= 0";
+                    dstr_catf(out,
+                        " (%s.type IN ('number','bigint','bigdec','bigfloat','unbound')"
+                        " AND %s.type IN ('number','bigint','bigdec','bigfloat','unbound')"
+                        " AND qjson_decimal_cmp("
+                          "COALESCE(%s.str, CAST(%s.lo AS TEXT)),"
+                          "COALESCE(%s.str, CAST(%s.lo AS TEXT))) %s)",
+                        lv, rv, ln, ln, rn, rn, cmp_op);
+                }
+
+                dstr_free(&rvid);
+                dstr_free(&wvid);
+                continue;
+            }
+
+            /* ── Path vs literal ── */
             dstr val; dstr_init(&val);
             char val_type = 'n';
             if (expr[pos] == '"') {
@@ -373,14 +468,6 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                     dstr_catc(&val, expr[pos++]);
                 val_type = 'n';
             }
-
-            /* resolve path */
-            path_step wsteps[32];
-            int nwsteps = parse_path(path_str, wsteps, 32);
-            dstr wvid; dstr_init(&wvid);
-            sb_resolve(sb, wsteps, nwsteps, "root.id", &wvid);
-            free_steps(wsteps, nwsteps);
-            sqlite3_free(path_str);
 
             /* emit comparison */
             if (val_type == 'l') {
