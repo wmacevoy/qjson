@@ -1039,6 +1039,103 @@ def qjson_select(conn, root_id, select_path, where_expr=None,
     return results
 
 
+def qjson_closure(conn, root_id, set_path,
+                  where_from=None, where_to=None,
+                  prefix="qjson_", dialect=None):
+    """Compute transitive closure of a binary relation (set of 2-tuples).
+
+    set_path    — path to a set of 2-element tuples (e.g. ".edge")
+    where_from  — optional: only paths starting from this value (string)
+    where_to    — optional: only paths ending at this value (string)
+
+    Returns list of (from_text, to_text) pairs as QJSON strings.
+
+    Example:
+        # edge = {[a, b], [b, c], [c, d]}
+        qjson_closure(conn, root, '.edge')
+        # → [('a','b'), ('a','c'), ('a','d'), ('b','c'), ('b','d'), ('c','d')]
+
+        qjson_closure(conn, root, '.edge', where_from='a')
+        # → [('a','b'), ('a','c'), ('a','d')]
+    """
+    if dialect is None:
+        dialect = 'sqlite'
+    P = '?' if dialect == 'sqlite' else '%s'
+    qi = lambda name: '"%s%s"' % (prefix, name)
+
+    # Resolve set_path to the set's object_id
+    builder = _QueryBuilder(prefix=prefix, dialect=dialect)
+    steps = parse_path(set_path)
+    vid_expr = builder.resolve_path(steps, "root.id")
+
+    resolve_sql = ("SELECT o.id FROM %s root %s"
+                   " JOIN %s o ON o.value_id = %s"
+                   " WHERE root.id = %s" % (
+                       qi("value"), "\n".join(builder._joins),
+                       qi("object"), vid_expr, P))
+    params = list(builder._params) + [root_id]
+
+    if dialect == 'postgres':
+        cur = conn.cursor()
+        cur.execute(resolve_sql, tuple(params))
+        row = cur.fetchone()
+    else:
+        row = conn.execute(resolve_sql, tuple(params)).fetchone()
+    if not row:
+        return []
+    obj_id = row[0]
+
+    # Build WITH RECURSIVE query
+    cte_sql = """
+WITH RECURSIVE closure(from_vid, to_vid) AS (
+    SELECT ai0.value_id, ai1.value_id
+    FROM {oi} oi
+    JOIN {arr} a ON a.value_id = oi.key_id
+    JOIN {ai} ai0 ON ai0.array_id = a.id AND ai0.idx = 0
+    JOIN {ai} ai1 ON ai1.array_id = a.id AND ai1.idx = 1
+    WHERE oi.object_id = {P}
+
+    UNION
+
+    SELECT c.from_vid, ai1.value_id
+    FROM closure c
+    JOIN {oi} oi ON oi.object_id = {P}
+    JOIN {arr} a ON a.value_id = oi.key_id
+    JOIN {ai} ai0 ON ai0.array_id = a.id AND ai0.idx = 0
+    JOIN {ai} ai1 ON ai1.array_id = a.id AND ai1.idx = 1
+    WHERE qjson_reconstruct(ai0.value_id, {P}) = qjson_reconstruct(c.to_vid, {P})
+)
+SELECT qjson_reconstruct(from_vid, {P}), qjson_reconstruct(to_vid, {P})
+FROM closure""".format(
+        oi=qi("object_item"), arr=qi("array"), ai=qi("array_item"),
+        P=P)
+
+    cte_params = [obj_id, obj_id, prefix, prefix, prefix, prefix]
+
+    # Optional filters
+    filters = []
+    if where_from is not None:
+        filters.append(
+            "from_vid IN (SELECT value_id FROM %s WHERE value = %s)" % (qi("string"), P))
+        cte_params.append(where_from)
+    if where_to is not None:
+        filters.append(
+            "to_vid IN (SELECT value_id FROM %s WHERE value = %s)" % (qi("string"), P))
+        cte_params.append(where_to)
+
+    if filters:
+        cte_sql += "\nWHERE " + " AND ".join(filters)
+
+    if dialect == 'postgres':
+        cur = conn.cursor()
+        cur.execute(cte_sql, tuple(cte_params))
+        rows = cur.fetchall()
+    else:
+        rows = conn.execute(cte_sql, tuple(cte_params)).fetchall()
+
+    return [(r[0], r[1]) for r in rows]
+
+
 def qjson_solve(conn, root_id, constraint_expr,
                 prefix="qjson_", dialect=None, has_ext=True):
     """Solve constraints by decomposing into 3-term qjson_solve_* calls.

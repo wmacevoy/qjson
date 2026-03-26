@@ -63,7 +63,7 @@ Reconstruct: value_id → canonical QJSON text
 | `src/qjson-sql.js` / `src/qjson_sql.py` | Interval projection + SQL adapter (SQLite/SQLCipher/PG) |
 | `src/qjson_query.py` | Query translator (path → SQL compiler, SELECT + UPDATE) |
 | `native/qjson.h` / `native/qjson.c` | C: parse + stringify + project + cmp + is_json + is_bound |
-| `native/qjson_sqlite_ext.c` | SQLite extension: cmp, arithmetic, solver, reconstruct, select |
+| `native/qjson_sqlite_ext.c` | SQLite extension: cmp, arithmetic, solver, reconstruct, select, closure |
 | `native/libbf/` | Vendored libbf (exact directed rounding + arithmetic) |
 | `sql/qjson_pg.sql` | PostgreSQL: query translator + reconstruct + comparison |
 | `wasm/qjson_wasm_init.c` | WASM: auto-registers extension via sqlite3_auto_extension |
@@ -114,6 +114,10 @@ Unbound: same-name → equal; different-name or vs concrete → all return 1.
 `qjson_add`, `sub`, `mul`, `div`, `pow`, `neg`, `abs`, `sqrt`,
 `exp`, `log`, `sin`, `cos`, `tan`, `atan`, `asin`, `acos`, `pi`.
 All take/return TEXT decimal strings.
+
+**Transitive closure** — `qjson_closure(root_id, set_path, prefix)`:
+computes reachable pairs from a set of 2-tuples using WITH RECURSIVE.
+Available as Python function (`qjson_query.qjson_closure`) and C SQL function.
 
 **Constraint solver** — `qjson_solve_add(a, b, c)`:
 3-term constraints where args are INTEGER (value_id lvalue) or TEXT (literal).

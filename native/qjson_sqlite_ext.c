@@ -1857,6 +1857,102 @@ static void sql_qjson_round_up(sqlite3_context *ctx, int argc, sqlite3_value **a
 
 #endif /* QJSON_USE_LIBBF */
 
+/* ── qjson_closure: transitive closure of binary relation ── */
+
+static void sql_qjson_closure(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+    if (argc < 2 || sqlite3_value_type(argv[0]) == SQLITE_NULL ||
+        sqlite3_value_type(argv[1]) == SQLITE_NULL) {
+        sqlite3_result_null(ctx); return;
+    }
+
+    sqlite3_int64 root_id = sqlite3_value_int64(argv[0]);
+    const char *set_path = (const char *)sqlite3_value_text(argv[1]);
+    const char *prefix = (argc > 2 && sqlite3_value_type(argv[2]) != SQLITE_NULL)
+        ? (const char *)sqlite3_value_text(argv[2]) : "qjson_";
+
+    sqlite3 *db = sqlite3_context_db_handle(ctx);
+
+    /* Resolve set_path to find the set's object_id */
+    sql_builder sb;
+    sb_init(&sb, prefix);
+    path_step steps[32];
+    int nsteps = parse_path(set_path, steps, 32);
+    dstr vid; dstr_init(&vid);
+    sb_resolve(&sb, steps, nsteps, "root.id", &vid);
+    free_steps(steps, nsteps);
+
+    dstr resolve_sql; dstr_init(&resolve_sql);
+    dstr_catf(&resolve_sql,
+        "SELECT o.id FROM \"%svalue\" root %s"
+        " JOIN \"%sobject\" o ON o.value_id = %s"
+        " WHERE root.id = %lld",
+        prefix, sb.joins.buf ? sb.joins.buf : "",
+        prefix, vid.buf, root_id);
+
+    sqlite3_stmt *stmt = NULL;
+    sqlite3_int64 obj_id = 0;
+    if (sqlite3_prepare_v2(db, resolve_sql.buf, -1, &stmt, NULL) == SQLITE_OK &&
+        sqlite3_step(stmt) == SQLITE_ROW)
+        obj_id = sqlite3_column_int64(stmt, 0);
+    if (stmt) sqlite3_finalize(stmt);
+    dstr_free(&resolve_sql);
+    dstr_free(&vid);
+    sb_free(&sb);
+
+    if (!obj_id) {
+        sqlite3_result_text(ctx, "{}", 2, SQLITE_STATIC);
+        return;
+    }
+
+    /* WITH RECURSIVE transitive closure */
+    char *cte = sqlite3_mprintf(
+        "WITH RECURSIVE closure(from_vid, to_vid) AS ("
+        " SELECT ai0.value_id, ai1.value_id"
+        " FROM \"%sobject_item\" oi"
+        " JOIN \"%sarray\" a ON a.value_id = oi.key_id"
+        " JOIN \"%sarray_item\" ai0 ON ai0.array_id = a.id AND ai0.idx = 0"
+        " JOIN \"%sarray_item\" ai1 ON ai1.array_id = a.id AND ai1.idx = 1"
+        " WHERE oi.object_id = %lld"
+        " UNION"
+        " SELECT c.from_vid, ai1.value_id"
+        " FROM closure c"
+        " JOIN \"%sobject_item\" oi ON oi.object_id = %lld"
+        " JOIN \"%sarray\" a ON a.value_id = oi.key_id"
+        " JOIN \"%sarray_item\" ai0 ON ai0.array_id = a.id AND ai0.idx = 0"
+        " JOIN \"%sarray_item\" ai1 ON ai1.array_id = a.id AND ai1.idx = 1"
+        " WHERE qjson_reconstruct(ai0.value_id, '%s') = qjson_reconstruct(c.to_vid, '%s')"
+        ")"
+        " SELECT qjson_reconstruct(from_vid, '%s'), qjson_reconstruct(to_vid, '%s')"
+        " FROM closure",
+        prefix, prefix, prefix, prefix, obj_id,
+        prefix, obj_id, prefix, prefix, prefix,
+        prefix, prefix, prefix, prefix);
+
+    stmt = NULL;
+    dstr result; dstr_init(&result);
+    dstr_catc(&result, '{');
+    int first = 1;
+
+    if (sqlite3_prepare_v2(db, cte, -1, &stmt, NULL) == SQLITE_OK) {
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *from_s = (const char *)sqlite3_column_text(stmt, 0);
+            const char *to_s = (const char *)sqlite3_column_text(stmt, 1);
+            if (!first) dstr_catc(&result, ',');
+            first = 0;
+            dstr_catc(&result, '[');
+            dstr_cat(&result, from_s);
+            dstr_catc(&result, ',');
+            dstr_cat(&result, to_s);
+            dstr_catc(&result, ']');
+        }
+    }
+    if (stmt) sqlite3_finalize(stmt);
+    sqlite3_free(cte);
+    dstr_catc(&result, '}');
+
+    sqlite3_result_text(ctx, result.buf, result.len, sqlite3_free);
+}
+
 /* ── Extension entry point ──────────────────────────────── */
 
 #ifdef _WIN32
@@ -1914,6 +2010,9 @@ int sqlite3_qjsonext_init(sqlite3 *db, char **pzErrMsg, const sqlite3_api_routin
     sqlite3_create_function(db, "qjson_round_down", 1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_round_down, NULL, NULL);
     sqlite3_create_function(db, "qjson_round_up",   1, SQLITE_UTF8|SQLITE_DETERMINISTIC, NULL, sql_qjson_round_up,   NULL, NULL);
 #endif
+
+    sqlite3_create_function(db, "qjson_closure", -1,
+        SQLITE_UTF8, NULL, sql_qjson_closure, NULL, NULL);
 
     /* Register qjson_select as eponymous table-valued function */
     sqlite3_create_module(db, "qjson_select", &qs_module, NULL);

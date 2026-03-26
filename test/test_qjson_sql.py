@@ -483,6 +483,69 @@ def test_set_iteration():
     print('  Set iteration [K]%s: OK' % ext_note)
 
 
+def test_recursive_closure():
+    """Test transitive closure via WITH RECURSIVE."""
+    import sqlite3 as _sqlite3
+    from qjson import parse
+    from qjson_query import qjson_closure
+
+    conn = _sqlite3.connect(':memory:')
+    has_ext = False
+    try:
+        conn.enable_load_extension(True)
+        conn.load_extension('./qjson_ext')
+        has_ext = True
+    except Exception:
+        pass
+
+    a = qjson_sql_adapter(conn)
+    a['setup']()
+
+    # Graph: a→b→c→d
+    root = a['store']({
+        'edge': parse('{[a, b], [b, c], [c, d]}')
+    })
+    a['commit']()
+
+    # 1. Full transitive closure (Python)
+    pairs = qjson_closure(conn, root, '.edge')
+    assert len(pairs) == 6, 'expected 6, got %d' % len(pairs)
+
+    # 2. Filtered: reachable from 'a'
+    pairs = qjson_closure(conn, root, '.edge', where_from='a')
+    assert len(pairs) == 3
+    to_vals = sorted([p[1] for p in pairs])
+    assert '"b"' in to_vals and '"c"' in to_vals and '"d"' in to_vals
+
+    # 3. Filtered: reaching 'd'
+    pairs = qjson_closure(conn, root, '.edge', where_to='d')
+    assert len(pairs) == 3
+
+    # 4. Both filters: a to d
+    pairs = qjson_closure(conn, root, '.edge', where_from='a', where_to='d')
+    assert len(pairs) == 1
+
+    # 5. C extension: qjson_closure() scalar function
+    if has_ext:
+        result = conn.execute('SELECT qjson_closure(?, ?, ?)',
+            (root, '.edge', 'qjson_')).fetchone()[0]
+        v = parse(result)
+        assert hasattr(v, 'entries') and len(v.entries) == 6
+
+    # 6. Cycle detection (should not loop forever)
+    root2 = a['store']({
+        'edge': parse('{[a, b], [b, c], [c, a]}')
+    })
+    a['commit']()
+    pairs = qjson_closure(conn, root2, '.edge')
+    # a→b, a→c, a→a, b→c, b→a, b→b, c→a, c→b, c→c = 9
+    assert len(pairs) == 9, 'cycle closure: expected 9, got %d' % len(pairs)
+
+    conn.close()
+    ext_note = ' (with C extension)' if has_ext else ''
+    print('  Recursive closure%s: OK' % ext_note)
+
+
 # ── Main ─────────────────────────────────────────────────────
 
 if __name__ == '__main__':
@@ -497,6 +560,7 @@ if __name__ == '__main__':
     test_sqlite_custom_prefix()
     test_large_keys_and_deep_paths()
     test_set_iteration()
+    test_recursive_closure()
 
     if '--postgres' in sys.argv:
         print('\nPostgreSQL tests:')

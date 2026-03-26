@@ -1081,6 +1081,34 @@ SELECT qjson_div('1', '3', 50);        -- → '0.33333...' (50 digits)
 SELECT qjson_pi(100);                  -- → π to 100 digits
 ```
 
+## Transitive closure
+
+`qjson_closure(root_id, set_path [, prefix])` computes the
+transitive closure of a binary relation stored as a set of
+2-element tuples.
+
+```python
+# Python
+from qjson_query import qjson_closure
+
+# edge = {[a, b], [b, c], [c, d]}
+pairs = qjson_closure(conn, root, '.edge')
+# → [("a","b"), ("a","c"), ("a","d"), ("b","c"), ("b","d"), ("c","d")]
+
+# Reachable from 'a'
+pairs = qjson_closure(conn, root, '.edge', where_from='a')
+# → [("a","b"), ("a","c"), ("a","d")]
+```
+
+```sql
+-- SQLite (C extension)
+SELECT qjson_closure(root_id, '.edge', 'qjson_');
+-- → {["a","b"],["b","c"],["c","d"],["a","c"],["b","d"],["a","d"]}
+```
+
+Uses `WITH RECURSIVE` + `UNION` for fixpoint computation.
+Handles cycles — `UNION` eliminates duplicates automatically.
+
 ## Constraint solver
 
 `qjson_solve(root_id, formula)` — store a document with one
