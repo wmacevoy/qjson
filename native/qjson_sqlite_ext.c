@@ -492,11 +492,11 @@ static void sb_compile_where(sql_builder *sb, const char *expr, dstr *out) {
                 /* numeric: strip suffix, determine query type, project interval */
                 dstr raw; dstr_init(&raw);
                 dstr_cat(&raw, val.buf);
-                int q_type = QJSON_NUM; /* default: plain number */
+                int q_type = QJSON_NUMBER; /* default: plain number */
                 if (raw.len > 0) {
                     char last = raw.buf[raw.len - 1];
                     if (last == 'N' || last == 'n') { q_type = QJSON_BIGINT; raw.buf[--raw.len] = '\0'; }
-                    else if (last == 'M' || last == 'm') { q_type = QJSON_BIGDEC; raw.buf[--raw.len] = '\0'; }
+                    else if (last == 'M' || last == 'm') { q_type = QJSON_BIGDECIMAL; raw.buf[--raw.len] = '\0'; }
                     else if (last == 'L' || last == 'l') { q_type = QJSON_BIGFLOAT; raw.buf[--raw.len] = '\0'; }
                 }
 

@@ -14,19 +14,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-
-typedef enum {
-    QJSON_NULL, QJSON_TRUE, QJSON_FALSE,
-    QJSON_NUM,          /* double */
-    QJSON_BIGINT,       /* raw string, suffix N */
-    QJSON_BIGDEC,       /* raw string, suffix M */
-    QJSON_BIGFLOAT,     /* raw string, suffix L */
-    QJSON_BLOB,         /* binary data, 0j prefix (JS64 encoded) */
-    QJSON_STRING,
-    QJSON_ARRAY,
-    QJSON_OBJECT,
-    QJSON_UNBOUND       /* ?name — unbound variable, str holds name */
-} qjson_type;
+#include "qjson_types.h"
 
 typedef struct qjson_val qjson_val;
 
@@ -43,6 +31,11 @@ struct qjson_val {
         struct { const char *data; int len; } blob; /* binary blob data */
         struct { qjson_val **items; int count; } arr;
         struct { qjson_kv  *pairs; int count; } obj;
+        struct { qjson_val *pattern; qjson_val *cond; } view;   /* WHERE */
+        struct { qjson_val *pattern; qjson_val *source; } match; /* IN */
+        struct { const char *op; int op_len; qjson_val *left; qjson_val *right; } binop; /* AND/OR and +,-,*,/,^ */
+        struct { qjson_val *operand; } notop;  /* NOT */
+        struct { qjson_val *left; qjson_val *right; } equation; /* expr = expr */
     };
 };
 
@@ -73,7 +66,7 @@ int qjson_stringify(const qjson_val *v, char *buf, int cap);
 /* ── Accessors ───────────────────────────────────────────── */
 
 static inline qjson_type  qjson_type_of(const qjson_val *v) { return v ? v->type : QJSON_NULL; }
-static inline double   qjson_num(const qjson_val *v)     { return v && v->type == QJSON_NUM ? v->num : 0; }
+static inline double   qjson_num(const qjson_val *v)     { return v && v->type == QJSON_NUMBER ? v->num : 0; }
 static inline const char *qjson_str(const qjson_val *v)  { return v && v->type == QJSON_STRING ? v->str.s : NULL; }
 static inline int      qjson_str_len(const qjson_val *v) { return v && v->type == QJSON_STRING ? v->str.len : 0; }
 static inline int      qjson_arr_len(const qjson_val *v) { return v && v->type == QJSON_ARRAY ? v->arr.count : 0; }
@@ -109,8 +102,8 @@ int qjson_is_bound(const qjson_val *v);
 void qjson_project(const char *raw, int len, double *lo, double *hi);
 
 /* Project a parsed qjson_val to its interval.
-   QJSON_NUM:      lo == hi == val->num (plain doubles are exact).
-   QJSON_BIGINT/QJSON_BIGDEC/QJSON_BIGFLOAT: directed rounding on raw string.
+   QJSON_NUMBER:   lo == hi == val->num (plain doubles are exact).
+   QJSON_BIGINT/QJSON_BIGDECIMAL/QJSON_BIGFLOAT: directed rounding on raw string.
    QJSON_UNBOUND:  lo = -INFINITY, hi = +INFINITY (matches everything).
    Other types: lo = hi = 0. */
 void qjson_val_project(const qjson_val *v, double *lo, double *hi);

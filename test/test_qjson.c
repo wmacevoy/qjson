@@ -28,11 +28,11 @@ static void test_parse_basic(void) {
     qjson_arena a; qjson_arena_init(&a, arena_buf, sizeof(arena_buf));
 
     qjson_val *v = qjson_parse(&a, "42", 2);
-    TEST("parse integer", v && v->type == QJSON_NUM && v->num == 42);
+    TEST("parse integer", v && v->type == QJSON_NUMBER && v->num == 42);
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "-3.14", 5);
-    TEST("parse float", v && v->type == QJSON_NUM && v->num < -3.13 && v->num > -3.15);
+    TEST("parse float", v && v->type == QJSON_NUMBER && v->num < -3.13 && v->num > -3.15);
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "\"hello\"", 7);
@@ -80,11 +80,11 @@ static void test_parse_bignum(void) {
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "3.14M", 5);
-    TEST("BigDecimal M", v && v->type == QJSON_BIGDEC && strcmp(v->str.s, "3.14") == 0);
+    TEST("BigDecimal M", v && v->type == QJSON_BIGDECIMAL && strcmp(v->str.s, "3.14") == 0);
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "3.14m", 5);
-    TEST("BigDecimal m (lc)", v && v->type == QJSON_BIGDEC);
+    TEST("BigDecimal m (lc)", v && v->type == QJSON_BIGDECIMAL);
 
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "3.14L", 5);
@@ -101,17 +101,17 @@ static void test_parse_comments(void) {
 
     const char *s = "// line comment\n42";
     qjson_val *v = qjson_parse(&a, s, strlen(s));
-    TEST("line comment", v && v->type == QJSON_NUM && v->num == 42);
+    TEST("line comment", v && v->type == QJSON_NUMBER && v->num == 42);
 
     qjson_arena_reset(&a);
     s = "/* block */ 42";
     v = qjson_parse(&a, s, strlen(s));
-    TEST("block comment", v && v->type == QJSON_NUM && v->num == 42);
+    TEST("block comment", v && v->type == QJSON_NUMBER && v->num == 42);
 
     qjson_arena_reset(&a);
     s = "/* outer /* inner */ still */ 42";
     v = qjson_parse(&a, s, strlen(s));
-    TEST("nested block comment", v && v->type == QJSON_NUM && v->num == 42);
+    TEST("nested block comment", v && v->type == QJSON_NUMBER && v->num == 42);
 }
 
 static void test_parse_human(void) {
@@ -225,13 +225,13 @@ static void test_project(void) {
     TEST("-0.1 bracketed", lo < hi && lo < 0 && hi < 0);
     TEST("-0.1 tight (1-ULP)", nextafter(lo, INFINITY) == hi);
 
-    /* val_project: QJSON_NUM -> point interval */
+    /* val_project: QJSON_NUMBER -> point interval */
     qjson_arena a; qjson_arena_init(&a, arena_buf, sizeof(arena_buf));
     qjson_val *v = qjson_parse(&a, "42", 2);
     qjson_val_project(v, &lo, &hi);
-    TEST("val_project QJSON_NUM", lo == 42.0 && hi == 42.0);
+    TEST("val_project QJSON_NUMBER", lo == 42.0 && hi == 42.0);
 
-    /* val_project: QJSON_BIGDEC -> directed rounding */
+    /* val_project: QJSON_BIGDECIMAL -> directed rounding */
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "0.1M", 4);
     qjson_val_project(v, &lo, &hi);
@@ -273,8 +273,8 @@ static int cmpop(const char *a, const char *b, cmp_fn fn) {
     double a_lo, a_hi, b_lo, b_hi;
     qjson_project(a, strlen(a), &a_lo, &a_hi);
     qjson_project(b, strlen(b), &b_lo, &b_hi);
-    int a_type = (a_lo == a_hi) ? QJSON_NUM : QJSON_BIGDEC;
-    int b_type = (b_lo == b_hi) ? QJSON_NUM : QJSON_BIGDEC;
+    int a_type = (a_lo == a_hi) ? QJSON_NUMBER : QJSON_BIGDECIMAL;
+    int b_type = (b_lo == b_hi) ? QJSON_NUMBER : QJSON_BIGDECIMAL;
     const char *a_str = (a_lo == a_hi) ? NULL : a;
     int a_sl = (a_lo == a_hi) ? 0 : (int)strlen(a);
     const char *b_str = (b_lo == b_hi) ? NULL : b;
@@ -551,7 +551,7 @@ static void test_parse_unbound(void) {
     v = qjson_parse(&a, arr, strlen(arr));
     TEST("unbound in array", v && v->type == QJSON_ARRAY && v->arr.count == 3);
     TEST("arr[0] unbound", v->arr.items[0]->type == QJSON_UNBOUND && strcmp(v->arr.items[0]->str.s, "X") == 0);
-    TEST("arr[1] num", v->arr.items[1]->type == QJSON_NUM && v->arr.items[1]->num == 42);
+    TEST("arr[1] num", v->arr.items[1]->type == QJSON_NUMBER && v->arr.items[1]->num == 42);
     TEST("arr[2] unbound", v->arr.items[2]->type == QJSON_UNBOUND && strcmp(v->arr.items[2]->str.s, "Y") == 0);
 
     /* Stringify round-trip */
@@ -600,16 +600,16 @@ static void test_cmp_fix(void) {
 
     /* Old bug: this would call qjson_decimal_cmp with NULL str */
     /* 0.3M != 0.3 (double): exact 0.3 > ieee double 0.2999... */
-    TEST("0.3M != 0.3", qjson_cmp_ne(QJSON_BIGDEC, m_lo, "0.3", 3, m_hi,
-                                      QJSON_NUM, d_lo, NULL, 0, d_hi));
-    TEST("0.3M > 0.3",  qjson_cmp_gt(QJSON_BIGDEC, m_lo, "0.3", 3, m_hi,
-                                      QJSON_NUM, d_lo, NULL, 0, d_hi));
+    TEST("0.3M != 0.3", qjson_cmp_ne(QJSON_BIGDECIMAL, m_lo, "0.3", 3, m_hi,
+                                      QJSON_NUMBER, d_lo, NULL, 0, d_hi));
+    TEST("0.3M > 0.3",  qjson_cmp_gt(QJSON_BIGDECIMAL, m_lo, "0.3", 3, m_hi,
+                                      QJSON_NUMBER, d_lo, NULL, 0, d_hi));
 
     /* 0.5M vs 0.5: same value, both exact */
     qjson_project("0.5", 3, &m_lo, &m_hi);
     d_lo = d_hi = 0.5;
-    TEST("0.5M == 0.5", qjson_cmp_eq(QJSON_BIGDEC, m_lo, NULL, 0, m_hi,
-                                      QJSON_NUM, d_lo, NULL, 0, d_hi));
+    TEST("0.5M == 0.5", qjson_cmp_eq(QJSON_BIGDECIMAL, m_lo, NULL, 0, m_hi,
+                                      QJSON_NUMBER, d_lo, NULL, 0, d_hi));
 
     /* ── Unbound comparison tests ─────────────────────────── */
 
@@ -639,13 +639,13 @@ static void test_cmp_fix(void) {
 
     /* Unbound vs concrete: all operators true (unknown) */
     TEST("?X eq 42",  qjson_cmp_eq(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
-                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+                                    QJSON_NUMBER, 42.0, NULL, 0, 42.0));
     TEST("?X ne 42",  qjson_cmp_ne(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
-                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+                                    QJSON_NUMBER, 42.0, NULL, 0, 42.0));
     TEST("?X lt 42",  qjson_cmp_lt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
-                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+                                    QJSON_NUMBER, 42.0, NULL, 0, 42.0));
     TEST("?X gt 42",  qjson_cmp_gt(QJSON_UNBOUND, -INFINITY, "X", 1, INFINITY,
-                                    QJSON_NUM, 42.0, NULL, 0, 42.0));
+                                    QJSON_NUMBER, 42.0, NULL, 0, 42.0));
 }
 
 /* -- Benchmark ------------------------------------------------ */
@@ -762,7 +762,7 @@ static void test_complex_keys(void) {
     qjson_arena_reset(&a);
     v = qjson_parse(&a, "{42: \"answer\"}", 14);
     TEST("number key parse", v && v->type == QJSON_OBJECT && v->obj.count == 1);
-    TEST("number key type", v->obj.pairs[0].key->type == QJSON_NUM &&
+    TEST("number key type", v->obj.pairs[0].key->type == QJSON_NUMBER &&
          v->obj.pairs[0].key->num == 42.0);
     TEST("number key value", v->obj.pairs[0].val->type == QJSON_STRING &&
          strcmp(v->obj.pairs[0].val->str.s, "answer") == 0);
@@ -811,7 +811,7 @@ static void test_complex_keys(void) {
     v = qjson_parse(&a, "{name: 1, 42: 2}", 16);
     TEST("mixed keys parse", v && v->type == QJSON_OBJECT && v->obj.count == 2);
     TEST("mixed key[0] string", v->obj.pairs[0].key->type == QJSON_STRING);
-    TEST("mixed key[1] number", v->obj.pairs[1].key->type == QJSON_NUM);
+    TEST("mixed key[1] number", v->obj.pairs[1].key->type == QJSON_NUMBER);
 
     /* Map syntax stringify (string keys quoted) */
     n = qjson_stringify(v, out, sizeof(out));
@@ -844,7 +844,7 @@ static void test_complex_keys(void) {
     TEST("obj_get string key", got && got->type == QJSON_STRING &&
          strcmp(got->str.s, "alice") == 0);
     got = qjson_obj_get(v, "age");
-    TEST("obj_get number val", got && got->type == QJSON_NUM && got->num == 30.0);
+    TEST("obj_get number val", got && got->type == QJSON_NUMBER && got->num == 30.0);
 
     /* Empty object is still {} */
     qjson_arena_reset(&a);
@@ -852,6 +852,95 @@ static void test_complex_keys(void) {
     TEST("empty object", v && v->type == QJSON_OBJECT && v->obj.count == 0);
     n = qjson_stringify(v, out, sizeof(out));
     TEST("empty object stringify", strcmp(out, "{}") == 0);
+}
+
+/* -- View / Datalog ------------------------------------------- */
+
+static void test_views(void) {
+    printf("=== Views (WHERE/AND/OR/NOT/IN) ===\n");
+    qjson_arena a; qjson_arena_init(&a, arena_buf, sizeof(arena_buf));
+    char out[2048];
+    int n;
+
+    /* Simple view: pattern WHERE pattern IN source */
+    qjson_arena_reset(&a);
+    const char *s1 = "{x: ?A, y: ?B} where {a: ?A, b: ?B} in src";
+    qjson_val *v = qjson_parse(&a, s1, (int)strlen(s1));
+    TEST("view parse", v != NULL && v->type == QJSON_VIEW);
+    TEST("view pattern", v->view.pattern != NULL && v->view.pattern->type == QJSON_OBJECT);
+    TEST("view cond match", v->view.cond != NULL && v->view.cond->type == QJSON_MATCH);
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("view stringify", strstr(out, "where") != NULL && strstr(out, " in ") != NULL);
+
+    /* AND condition */
+    qjson_arena_reset(&a);
+    const char *s2 = "?X where {a: ?X} in s1 and {b: ?X} in s2";
+    v = qjson_parse(&a, s2, (int)strlen(s2));
+    TEST("view AND parse", v != NULL && v->type == QJSON_VIEW);
+    TEST("view AND cond", v->view.cond->type == QJSON_BINOP);
+    TEST("view AND op", strcmp(v->view.cond->binop.op, "and") == 0);
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("view AND stringify", strstr(out, " and ") != NULL);
+
+    /* OR condition */
+    qjson_arena_reset(&a);
+    const char *s3 = "?X where {a: ?X} in s1 or {b: ?X} in s2";
+    v = qjson_parse(&a, s3, (int)strlen(s3));
+    TEST("view OR parse", v != NULL && v->type == QJSON_VIEW);
+    TEST("view OR cond", v->view.cond->type == QJSON_BINOP);
+    TEST("view OR op", strcmp(v->view.cond->binop.op, "or") == 0);
+
+    /* NOT condition */
+    qjson_arena_reset(&a);
+    const char *s4 = "?X where {a: ?X} in s1 and not {b: ?X} in s2";
+    v = qjson_parse(&a, s4, (int)strlen(s4));
+    TEST("view NOT parse", v != NULL && v->type == QJSON_VIEW);
+    TEST("view NOT cond", v->view.cond->type == QJSON_BINOP);
+    TEST("view NOT right", v->view.cond->binop.right->type == QJSON_NOTOP);
+
+    /* Parenthesized condition */
+    qjson_arena_reset(&a);
+    const char *s5 = "?X where ({a: ?X} in s1 or {b: ?X} in s2) and {c: ?X} in s3";
+    v = qjson_parse(&a, s5, (int)strlen(s5));
+    TEST("view paren parse", v != NULL && v->type == QJSON_VIEW);
+    TEST("view paren top AND", v->view.cond->type == QJSON_BINOP &&
+         strcmp(v->view.cond->binop.op, "and") == 0);
+    TEST("view paren left OR", v->view.cond->binop.left->type == QJSON_BINOP &&
+         strcmp(v->view.cond->binop.left->binop.op, "or") == 0);
+
+    /* View as object entry value */
+    qjson_arena_reset(&a);
+    const char *s6 = "{gp: {grandparent: ?GP, grandchild: ?GC}"
+        " where {parent: ?GP, child: ?P} in parents"
+        " and {parent: ?P, child: ?GC} in parents}";
+    v = qjson_parse(&a, s6, (int)strlen(s6));
+    TEST("view in object parse", v != NULL && v->type == QJSON_OBJECT);
+    TEST("view in object count", v->obj.count == 1);
+    TEST("view in object key", v->obj.pairs[0].key->type == QJSON_STRING &&
+         strcmp(v->obj.pairs[0].key->str.s, "gp") == 0);
+    TEST("view in object val", v->obj.pairs[0].val->type == QJSON_VIEW);
+    n = qjson_stringify(v, out, sizeof(out));
+    TEST("view in object stringify", strstr(out, "where") != NULL);
+
+    /* Round-trip: parse → stringify → parse */
+    qjson_arena_reset(&a);
+    const char *s7 = "{r: ?X} where {a: ?X} in s1 and {b: ?X} in s2";
+    v = qjson_parse(&a, s7, (int)strlen(s7));
+    n = qjson_stringify(v, out, sizeof(out));
+    qjson_arena_reset(&a);
+    qjson_val *v2 = qjson_parse(&a, out, n);
+    TEST("view round-trip type", v2 != NULL && v2->type == QJSON_VIEW);
+    TEST("view round-trip cond", v2->view.cond->type == QJSON_BINOP);
+    char out2[2048];
+    int n2 = qjson_stringify(v2, out2, sizeof(out2));
+    TEST("view round-trip stable", n == n2 && memcmp(out, out2, n) == 0);
+
+    /* keywords as quoted strings still work */
+    qjson_arena_reset(&a);
+    v = qjson_parse(&a, "{\"where\": true, \"in\": false}", 28);
+    TEST("quoted keywords", v && v->type == QJSON_OBJECT && v->obj.count == 2);
+
+    (void)n;
 }
 
 /* -- Main ----------------------------------------------------- */
@@ -871,6 +960,7 @@ int main(void) {
     test_parse_unbound();
     test_cmp_fix();
     test_complex_keys();
+    test_views();
     benchmark();
 
     printf("\n%d/%d tests passed\n", pass, pass + fail);
