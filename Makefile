@@ -1,5 +1,7 @@
 CC = cc
-CFLAGS = -O2 -std=c11 -fPIC -DQJSON_USE_LIBBF -Inative -Inative/libbf
+FACTS_SRC = vendor/facts/src/facts.c
+FACTS_INC = -Ivendor/facts/include
+CFLAGS = -O2 -std=c11 -fPIC -DQJSON_USE_LIBBF -Inative -Inative/libbf $(FACTS_INC)
 LIBBF_SRC = native/libbf/libbf.c native/libbf/cutils.c
 QJSON_SRC = native/qjson.c native/qjson_lex.c native/qjson_parse.c
 
@@ -68,7 +70,7 @@ qjq: native/qjq.c native/qjson_js.h $(QJSON_SRC) native/libbf_qjs.o native/libbf
 		native/libbf_shim.o $(QJS_SRC) -lm -lpthread
 
 # C test binary
-test_qjson: test/test_qjson.c $(QJSON_SRC) $(LIBBF_SRC)
+test_qjson: test/test_qjson.c $(QJSON_SRC) $(LIBBF_SRC) $(FACTS_SRC)
 	$(CC) $(CFLAGS) -frounding-math -o $@ $^ -lm
 
 test: all test_qjson
