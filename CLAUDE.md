@@ -3,16 +3,24 @@
 ## Project
 
 QJSON — JSON superset with arbitrary-precision numerics (N/M/L suffixes, 0j blobs,
-? unbound variables) and interval-projected SQL storage.  Five layers:
-format, projection, SQL adapter, query translator, constraint solver.
+? unbound variables) and interval-projected SQL storage.
 
-Implementations in C, JavaScript, and Python.  All produce identical results.
+libqjson is the canonical C implementation — parser (Lemon), exact arithmetic
+(libbf), views with datalog-style pattern matching, and a reactive store.
+Host-agnostic: any language with C FFI embeds it.
+
+JS and Python packages call the native C library (via WASM in browsers, via
+native bindings in Node/Python).  The standalone `src/qjson.js` and
+`src/qjson.py` are legacy — they handle format only, not views/arithmetic.
 
 ## Commands
 
 ```bash
-# Build SQLite extension (libbf exact arithmetic + constraint solver)
+# Build SQLite extension
 make
+
+# Build qjq CLI tool (QuickJS + libqjson)
+make qjq
 
 # Python format tests
 python3 test/test_qjson.py
@@ -26,16 +34,8 @@ make test_qjson && ./test_qjson
 # SQL adapter tests (SQLite)
 python3 test/test_qjson_sql.py
 
-# SQL adapter tests (SQLite + PostgreSQL)
-docker compose up -d postgres
-python3 test/test_qjson_sql.py --postgres
-docker compose down
-
-# Mortgage calculator example
-python3 examples/compound_interest.py
-
-# PostgreSQL functions install
-psql -h localhost -p 5433 -U qjson -d qjson_test -f sql/qjson_pg.sql
+# Regenerate Lemon parser (after editing qjson_parse.y)
+make native/qjson_parse.c
 
 # All tests
 make test
@@ -43,54 +43,83 @@ make test
 
 ## Architecture
 
+libqjson is a C library.  It does not embed a scripting language —
+the host brings its own.
+
 ```
-Database layer (SQLite + PostgreSQL — identical):
-  Format:      parse/stringify QJSON text ↔ in-memory values
+libqjson (C library + SQLite extension)
+  Format:      parse/stringify QJSON text ↔ in-memory values (Lemon parser)
   Projection:  value → [lo, str, hi] IEEE double interval
   Comparison:  qjson_cmp_lt/le/eq/ne/gt/ge (6 functions, returns 0/1)
+  Arithmetic:  qjson_add/sub/mul/div/pow + transcendentals (libbf)
+  Solver:      constraint propagation (5 binary + 9 unary bidirectional)
+  Closure:     qjson_closure (WITH RECURSIVE transitive closure)
   SQL adapter: normalized 8-table schema — store/load/remove any QJSON value
   Query:       jq-like path expressions → SQL JOIN chains (pure translation)
   Reconstruct: value_id → canonical QJSON text
+  Views:       pattern WHERE condition (AND/OR/NOT/IN) — datalog-style
+  Resolver:    in-memory unification, shared variables = joins
+  Equations:   expr = expr with +,-,*,/,^ (exact via libbf type widening)
+  Reactive:    qjson_watch/unwatch — push notification on fact set mutation
+  Crypto:      SHA-256, AES-CBC+HMAC, HMAC, HKDF, Shamir, JWT (optional, LibreSSL)
 
-Application layer (wyatt — has libbf + LibreSSL):
-  Arithmetic:  qjson_add/sub/mul/div/pow + transcendentals (libbf)
-  Solver:      5 binary + 9 unary bidirectional solvers
-  Closure:     qjson_closure (WITH RECURSIVE transitive closure)
-  Projection:  roundDown/roundUp — requires libbf directed rounding
-  Crypto:      SHA-256, AES-CBC+HMAC, HMAC, HKDF, Shamir, JWT, base64
+Hosts bring their own language:
+  qjq          = QuickJS  + libqjson   (CLI tool)
+  Browser      = WASM     + libqjson   (client-side)
+  Python app   = qjson.py + libqjson   (pip install qjson)
+  Node app     = qjson.js + libqjson   (npm install qjson)
+  Fossil-like  = Tcl      + libqjson   (SQLite-native scripting)
+  Redis-like   = Lua      + libqjson   (in-process triggers)
 ```
 
-Data does not move at the database layer.  Computation and
-crypto require libbf and LibreSSL — they live in the application
-layer (wyatt), which projects results correctly before storing.
+**PostgreSQL**: future work.  The current `sql/qjson_pg.sql` is a PL/pgSQL
+reimplementation — archived, not maintained.  When PG support returns, it
+should be a C extension (`CREATE FUNCTION ... LANGUAGE C`) reusing the same
+C code, not a SQL reimplementation.
 
 ### Source modules
 
 | Module | Role |
 |--------|------|
-| `src/qjson.js` / `src/qjson.py` | QJSON parser + serializer + `is_json` + `is_bound` |
-| `src/qjson-sql.js` / `src/qjson_sql.py` | Interval projection + SQL adapter (SQLite/SQLCipher/PG) |
-| `src/qjson_query.py` | Query translator (path → SQL compiler, SELECT + UPDATE) |
-| `native/qjson.h` / `native/qjson.c` | C: parse + stringify + project + cmp + is_json + is_bound |
+| `native/qjson_types.h` | Shared bitmask type enum (with libbfxx) |
+| `native/qjson.h` / `native/qjson.c` | C: parse driver + stringify + project + cmp + is_json + is_bound |
+| `native/qjson_lex.h` / `native/qjson_lex.c` | Hand-written lexer (byte stream → tokens) |
+| `native/qjson_parse.y` | Lemon grammar (~30 productions) → `qjson_parse.c` + `.h` |
+| `native/qjson_parse_ctx.h` | Parse context: value stack + arena semantic actions |
+| `native/qjson_resolve.h` / `native/qjson_resolve.c` | In-memory resolver: unification, pattern matching, equation solver |
+| `native/qjson_db.h` / `native/qjson_db.c` | Reactive store: named facts/views, watch/unwatch, push notifications |
 | `native/qjson_sqlite_ext.c` | SQLite extension: cmp, arithmetic, solver, reconstruct, select, closure |
-| `native/qjson_crypto.c` / `.h` | Crypto: SHA-256, AES-CBC+HMAC, HKDF, Shamir, JWT (app layer, LibreSSL) |
+| `native/qjson_crypto.c` / `.h` | Crypto: SHA-256, AES-CBC+HMAC, HKDF, Shamir, JWT (optional, LibreSSL) |
+| `native/qjq.c` | qjq CLI: QuickJS + libqjson glue |
 | `native/libbf/` | Vendored libbf (exact directed rounding + arithmetic) |
-| `sql/qjson_pg.sql` | PostgreSQL: query translator + reconstruct + comparison |
+| `native/lemon/` | Vendored Lemon parser generator (from SQLCipher) |
+| `vendor/quickjs/` | Vendored QuickJS (for qjq CLI) |
+| `src/qjson.js` / `src/qjson.py` | Legacy: standalone parser + serializer (format only, no views/arithmetic) |
+| `src/qjson-sql.js` / `src/qjson_sql.py` | Legacy: SQL adapter (to be replaced by native bindings to libqjson) |
+| `src/qjson_query.py` | Query translator (path → SQL compiler, SELECT + UPDATE) |
+| `sql/qjson_pg.sql` | PostgreSQL (archived — future: rewrite as C extension) |
 | `wasm/qjson_wasm_init.c` | WASM: auto-registers extension via sqlite3_auto_extension |
 
 ### Packaging
 
 | Package | Install | Contents |
 |---------|---------|----------|
-| pip `qjson` | `pip install qjson` | `qjson`, `qjson.sql`, `qjson.query` |
-| npm `qjson` | `npm install qjson` | `qjson.js`, `qjson-sql.js` |
-| Docker `qjson-postgres` | `docker pull ghcr.io/wmacevoy/qjson-postgres` | PG 16 + QJSON functions |
-| WASM | release artifact `qjson-sqlcipher-wasm.tar.gz` | SQLCipher + QJSON in one binary |
+| `libqjson` | C library | `qjson.h`, `qjson_types.h`, `qjson.c`, `qjson_lex.c`, `qjson_parse.c`, libbf |
+| `qjson_ext.so` | SQLite `load_extension` | All SQL functions, solver, closure |
+| `qjq` | Static binary | QuickJS + libqjson CLI tool |
+| pip `qjson` | `pip install qjson` | Native bindings to libqjson (future: replace pure-Python) |
+| npm `qjson` | `npm install qjson` | WASM build of libqjson (future: replace pure-JS) |
+| WASM | CI artifact | SQLCipher + QJSON + libbf in one `.wasm` |
 
 ### Key concepts
 
 **QJSON types**: N = BigInt, M = BigDecimal, L = BigFloat, 0j = blob (JS64),
 ? = Unbound variable (`?X`, `?"quoted name"`).  Valid JSON is valid QJSON.
+
+**Bitmask type enum**: type IDs encode groups in bit pattern.  Numeric
+ordering matches type widening: `max(a, b)` = widened type.
+`NUMBER(0x021) < BIGINT(0x022) < BIGFLOAT(0x024) < BIGDECIMAL(0x028)`.
+Shared between qjson (C) and libbfxx (C++) via `qjson_types.h`.
 
 **Complex keys**: Object keys can be any QJSON value, not just strings.
 `{42: "answer"}`, `{[1,2]: "pair"}`.  Non-string keys produce QMap (Python)
@@ -140,7 +169,6 @@ Propagation via leaf folding — each constraint fires at most once.
 `{prefix}object`, `{prefix}object_item`.
 - `object_item` uses `key_id INTEGER` (FK to value) — keys are full QJSON values
 - SQLite/SQLCipher: `REAL` (8-byte), `BLOB`, `INTEGER PRIMARY KEY`
-- PostgreSQL: `DOUBLE PRECISION` (8-byte), `BYTEA`, `SERIAL PRIMARY KEY`
 - SQLCipher: pass `key='...'` to adapter; `PRAGMA key` issued before any operation
 
 **Query translator**: jq-like path expressions compiled to SQL JOINs.
@@ -152,23 +180,40 @@ Propagation via leaf folding — each constraint fires at most once.
 - WHERE with interval pushdown + qjson_cmp_[op] exact fallback
 - AND / OR / NOT / parentheses
 
+**Views** (datalog-style pattern matching):
+```
+grandparents: {grandparent: ?GP, grandchild: ?GC}
+  where {parent: ?GP, child: ?P} in parents
+    and {parent: ?P, child: ?GC} in parents
+```
+Shared `?P` across patterns = join.  `AND`/`OR`/`NOT`/`IN` conditions.
+Views are named declarations, not object entries.  Resolver evaluates
+via unification.  Equations: `?FV = ?P * (1 + ?R) ^ ?N` with exact
+arithmetic (libbf type widening: `max(a,b)` selects base-2 or base-10).
+
+**Reactive store** (`qjson_db`):
+`qjson_watch(db, "gp", callback, userdata)` — push notification when
+facts that a view depends on change.  Dependencies extracted from `IN`
+clauses.  No polling.
+
 **Encryption at rest**:
 - SQLite/SQLCipher: page-level, user-supplied key
 - Browser: SQLCipher WASM + OPFS/IndexedDB
-- PostgreSQL: encrypted volume (LUKS, cloud EBS/PD) — NOT pgcrypto on interval columns
 
 ## Constraints
 
-**`src/` files must be portable ES5-style JavaScript:**
-- `var` only (no `let`/`const`)
-- `function` only (no arrows)
-- No template literals, destructuring, spread, for-of
-- Targets: Node 12+, Bun, Deno, QuickJS, Duktape
+**C files**: C11, zero malloc for values (arena-allocated), no global mutable state.
 
-**C files**: C11, zero malloc (arena-allocated), no global mutable state.
+**Canonical implementation**: libqjson (C) is the source of truth for parsing,
+arithmetic, views, and comparison.  JS and Python packages should call native
+(via WASM or bindings), not reimplement.
 
-**Language-agnostic results**: JS, Python, and C produce identical
-intervals and comparison results for all inputs.
+**`src/` legacy files**: ES5-style JavaScript (for compatibility with
+QuickJS, Duktape).  These handle format only.  Views, arithmetic, and
+reactive features require the native C library.
+
+**Keywords**: `where`, `and`, `or`, `not`, `in` are reserved.
+Quote them when used as data: `{"in": true}`.
 
 ## License
 

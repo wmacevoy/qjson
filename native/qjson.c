@@ -144,375 +144,42 @@ int qjson_js64_encode(const char *data, int data_len, char *out, int out_cap) {
     return js64len;
 }
 
-/* ── Parser state ────────────────────────────────────────── */
+/* ── Lemon parser driver ────────────────────────────────── */
 
-typedef struct {
-    const char *s;
-    int         pos;
-    int         len;
-    qjson_arena   *arena;
-} pstate;
+#include "qjson_lex.h"
+#include "qjson_parse_ctx.h"
 
-static char peek(pstate *p) { return p->pos < p->len ? p->s[p->pos] : 0; }
+/* Lemon-generated parser interface */
+void *ParseAlloc(void *(*mallocProc)(size_t));
+void  ParseFree(void *p, void (*freeProc)(void *));
+void  Parse(void *yyp, int yymajor, qjson_token yyminor, qjson_parse_ctx *ctx);
 
-static void skip_ws(pstate *p) {
-    while (p->pos < p->len) {
-        char c = p->s[p->pos];
-        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { p->pos++; continue; }
-        if (c == '/' && p->pos + 1 < p->len) {
-            if (p->s[p->pos + 1] == '/') {
-                p->pos += 2;
-                while (p->pos < p->len && p->s[p->pos] != '\n') p->pos++;
-                continue;
-            }
-            if (p->s[p->pos + 1] == '*') {
-                p->pos += 2;
-                int depth = 1;
-                while (p->pos + 1 < p->len && depth > 0) {
-                    if (p->s[p->pos] == '/' && p->s[p->pos+1] == '*') { depth++; p->pos += 2; }
-                    else if (p->s[p->pos] == '*' && p->s[p->pos+1] == '/') { depth--; p->pos += 2; }
-                    else p->pos++;
-                }
-                continue;
-            }
-        }
-        break;
-    }
-}
-
-static qjson_val *parse_value(pstate *p);
-static qjson_val *parse_unbound(pstate *p);
-static qjson_val *parse_string_val(pstate *p);
-
-static qjson_val *make_val(pstate *p, qjson_type t) {
-    qjson_val *v = qjson_arena_alloc(p->arena, sizeof(qjson_val));
-    if (v) { memset(v, 0, sizeof(*v)); v->type = t; }
-    return v;
-}
-
-/* ── String parsing ──────────────────────────────────────── */
-
-static qjson_val *parse_string_val(pstate *p) {
-    p->pos++; /* skip opening " */
-    /* First pass: compute length */
-    int start = p->pos, escaped_len = 0;
-    while (p->pos < p->len && p->s[p->pos] != '"') {
-        if (p->s[p->pos] == '\\') { p->pos++; }
-        p->pos++;
-        escaped_len++;
-    }
-    if (p->pos >= p->len) return NULL;
-    int raw_end = p->pos;
-    p->pos++; /* skip closing " */
-
-    /* Second pass: unescape */
-    char *buf = qjson_arena_alloc(p->arena, escaped_len + 1);
-    if (!buf) return NULL;
-    int out = 0, i = start;
-    while (i < raw_end) {
-        if (p->s[i] == '\\') {
-            i++;
-            switch (p->s[i]) {
-                case '"':  buf[out++] = '"'; break;
-                case '\\': buf[out++] = '\\'; break;
-                case '/':  buf[out++] = '/'; break;
-                case 'b':  buf[out++] = '\b'; break;
-                case 'f':  buf[out++] = '\f'; break;
-                case 'n':  buf[out++] = '\n'; break;
-                case 'r':  buf[out++] = '\r'; break;
-                case 't':  buf[out++] = '\t'; break;
-                case 'u':  /* simplified: ASCII only */
-                    buf[out++] = '?'; i += 4; break;
-                default:   buf[out++] = p->s[i]; break;
-            }
-        } else {
-            buf[out++] = p->s[i];
-        }
-        i++;
-    }
-    buf[out] = '\0';
-
-    qjson_val *v = make_val(p, QJSON_STRING);
-    if (v) { v->str.s = buf; v->str.len = out; }
-    return v;
-}
-
-/* Parse bare identifier (unquoted key) */
-static char *parse_ident(pstate *p, int *out_len) {
-    int start = p->pos;
-    char c = peek(p);
-    if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$'))
-        return NULL;
-    p->pos++;
-    while (p->pos < p->len) {
-        c = p->s[p->pos];
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') || c == '_' || c == '$') p->pos++;
-        else break;
-    }
-    int len = p->pos - start;
-    *out_len = len;
-    return arena_strdup(p->arena, p->s + start, len);
-}
-
-/* ── Blob parsing (0j prefix → JS64) ─────────────────────── */
-
-static int is_js64_char(char c) {
-    return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') ||
-           (c >= 'a' && c <= 'z') || c == '$' || c == '_';
-}
-
-static qjson_val *parse_blob(pstate *p) {
-    /* p->pos is right after the '0j' or '0J' prefix */
-    js64_init_rev();
-
-    /* Collect JS64 characters (allow embedded whitespace) */
-    int start = p->pos;
-    int char_count = 0;
-    while (p->pos < p->len) {
-        char c = p->s[p->pos];
-        if (is_js64_char(c)) { char_count++; p->pos++; }
-        else if (c == ' ' || c == '\t' || c == '\n' || c == '\r') { p->pos++; }
-        else break;
-    }
-
-    /* Decode: char_count JS64 chars → (char_count * 3) >> 2 bytes */
-    int blob_len = (char_count * 3) >> 2;
-    char *data = qjson_arena_alloc(p->arena, blob_len > 0 ? blob_len : 1);
-    if (!data) return NULL;
-
-    int js64_span = p->pos - start;
-    int decoded = qjson_js64_decode(p->s + start, js64_span, data, blob_len);
-    if (decoded < 0) return NULL;
-
-    qjson_val *v = make_val(p, QJSON_BLOB);
-    if (v) { v->blob.data = data; v->blob.len = decoded; }
-    return v;
-}
-
-/* ── Number parsing ──────────────────────────────────────── */
-
-static qjson_val *parse_number(pstate *p) {
-    int start = p->pos;
-    if (peek(p) == '-') p->pos++;
-
-    /* Check for 0j / 0J blob prefix */
-    if (p->pos < p->len && p->s[p->pos] == '0' &&
-        p->pos + 1 < p->len && (p->s[p->pos + 1] == 'j' || p->s[p->pos + 1] == 'J')) {
-        p->pos += 2; /* skip '0j' */
-        return parse_blob(p);
-    }
-
-    while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') p->pos++;
-    int is_float = 0;
-    if (p->pos < p->len && p->s[p->pos] == '.') {
-        is_float = 1; p->pos++;
-        while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') p->pos++;
-    }
-    if (p->pos < p->len && (p->s[p->pos] == 'e' || p->s[p->pos] == 'E')) {
-        is_float = 1; p->pos++;
-        if (p->pos < p->len && (p->s[p->pos] == '+' || p->s[p->pos] == '-')) p->pos++;
-        while (p->pos < p->len && p->s[p->pos] >= '0' && p->s[p->pos] <= '9') p->pos++;
-    }
-    int raw_len = p->pos - start;
-    char *raw = arena_strdup(p->arena, p->s + start, raw_len);
-
-    /* Check suffix */
-    char suffix = (p->pos < p->len) ? p->s[p->pos] : 0;
-    if (suffix == 'N' || suffix == 'n') {
-        p->pos++;
-        qjson_val *v = make_val(p, QJSON_BIGINT);
-        if (v) { v->str.s = raw; v->str.len = raw_len; }
-        return v;
-    }
-    if (suffix == 'M' || suffix == 'm') {
-        p->pos++;
-        qjson_val *v = make_val(p, QJSON_BIGDEC);
-        if (v) { v->str.s = raw; v->str.len = raw_len; }
-        return v;
-    }
-    if (suffix == 'L' || suffix == 'l') {
-        p->pos++;
-        qjson_val *v = make_val(p, QJSON_BIGFLOAT);
-        if (v) { v->str.s = raw; v->str.len = raw_len; }
-        return v;
-    }
-
-    qjson_val *v = make_val(p, QJSON_NUM);
-    if (v) v->num = atof(raw);
-    (void)is_float;
-    return v;
-}
-
-/* ── Array parsing ───────────────────────────────────────── */
-
-static qjson_val *parse_array(pstate *p) {
-    p->pos++; /* [ */
-    skip_ws(p);
-
-    /* Collect into temp array (max 256 items, then grow) */
-    qjson_val *items[256];
-    int count = 0, cap = 256;
-    qjson_val **heap_items = NULL;
-    qjson_val **cur = items;
-
-    if (peek(p) == ']') { p->pos++; goto done; }
-    for (;;) {
-        qjson_val *item = parse_value(p);
-        if (!item) return NULL;
-        if (count >= cap) {
-            /* Overflow stack — shouldn't happen for typical messages */
-            return NULL;
-        }
-        cur[count++] = item;
-        skip_ws(p);
-        if (peek(p) == ']') { p->pos++; break; }
-        if (peek(p) != ',') return NULL;
-        p->pos++;
-        skip_ws(p);
-        if (peek(p) == ']') { p->pos++; break; } /* trailing comma */
-    }
-
-done:;
-    qjson_val *v = make_val(p, QJSON_ARRAY);
-    if (!v) return NULL;
-    v->arr.count = count;
-    v->arr.items = qjson_arena_alloc(p->arena, count * sizeof(qjson_val *));
-    if (v->arr.items) memcpy(v->arr.items, cur, count * sizeof(qjson_val *));
-    (void)heap_items;
-    return v;
-}
-
-/* ── Object parsing ──────────────────────────────────────── */
-
-static qjson_val *parse_object(pstate *p) {
-    p->pos++; /* { */
-    skip_ws(p);
-
-    qjson_kv pairs[128];
-    int count = 0;
-
-    if (peek(p) == '}') { p->pos++; goto done; }
-    for (;;) {
-        skip_ws(p);
-        /* Key: any QJSON value expression */
-        qjson_val *key = parse_value(p);
-        if (!key) return NULL;
-        skip_ws(p);
-        qjson_val *val;
-        if (peek(p) == ':') {
-            p->pos++;
-            val = parse_value(p);
-            if (!val) return NULL;
-        } else {
-            /* Set shorthand: value defaults to true */
-            val = make_val(p, QJSON_TRUE);
-            if (!val) return NULL;
-        }
-        if (count < 128) {
-            pairs[count].key = key;
-            pairs[count].val = val;
-            count++;
-        }
-        skip_ws(p);
-        if (peek(p) == '}') { p->pos++; break; }
-        if (peek(p) != ',') return NULL;
-        p->pos++;
-        skip_ws(p);
-        if (peek(p) == '}') { p->pos++; break; } /* trailing comma */
-    }
-
-done:;
-    qjson_val *v = make_val(p, QJSON_OBJECT);
-    if (!v) return NULL;
-    v->obj.count = count;
-    v->obj.pairs = qjson_arena_alloc(p->arena, count * sizeof(qjson_kv));
-    if (v->obj.pairs) memcpy(v->obj.pairs, pairs, count * sizeof(qjson_kv));
-    return v;
-}
-
-/* ── Unbound parsing ─────────────────────────────────────── */
-
-static qjson_val *parse_unbound(pstate *p) {
-    p->pos++; /* skip '?' */
-    const char *name; int name_len;
-    if (p->pos < p->len && p->s[p->pos] == '"') {
-        /* Quoted name: ?"Bob's Last Memo" */
-        qjson_val *sv = parse_string_val(p);
-        if (!sv) return NULL;
-        name = sv->str.s;
-        name_len = sv->str.len;
-    } else {
-        /* Bare identifier or anonymous */
-        int start = p->pos;
-        while (p->pos < p->len) {
-            char c = p->s[p->pos];
-            if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-                (c >= '0' && c <= '9') || c == '_') p->pos++;
-            else break;
-        }
-        if (p->pos == start) {
-            /* Just '?' alone → anonymous (empty name) */
-            name = arena_strdup(p->arena, "", 0);
-            name_len = 0;
-        } else {
-            name_len = p->pos - start;
-            name = arena_strdup(p->arena, p->s + start, name_len);
-        }
-    }
-    if (!name) return NULL;
-    qjson_val *v = make_val(p, QJSON_UNBOUND);
-    if (v) { v->str.s = name; v->str.len = name_len; }
-    return v;
-}
-
-/* ── Value dispatch ──────────────────────────────────────── */
-
-/* Check if text at pos is exactly a keyword (not part of a longer identifier). */
-static int is_kw(pstate *p, const char *word, int wlen) {
-    if (p->pos + wlen > p->len) return 0;
-    if (memcmp(p->s + p->pos, word, wlen) != 0) return 0;
-    if (p->pos + wlen < p->len) {
-        char nc = p->s[p->pos + wlen];
-        if ((nc >= 'a' && nc <= 'z') || (nc >= 'A' && nc <= 'Z') ||
-            (nc >= '0' && nc <= '9') || nc == '_' || nc == '$') return 0;
-    }
-    return 1;
-}
-
-static qjson_val *parse_value(pstate *p) {
-    skip_ws(p);
-    char c = peek(p);
-    if (c == '"') return parse_string_val(p);
-    if (c == '{') return parse_object(p);
-    if (c == '[') return parse_array(p);
-    if (c == 't' && is_kw(p, "true", 4))
-        { p->pos += 4; return make_val(p, QJSON_TRUE); }
-    if (c == 'f' && is_kw(p, "false", 5))
-        { p->pos += 5; return make_val(p, QJSON_FALSE); }
-    if (c == 'n' && is_kw(p, "null", 4))
-        { p->pos += 4; return make_val(p, QJSON_NULL); }
-    if (c == '-' || (c >= '0' && c <= '9')) return parse_number(p);
-    if (c == '?') return parse_unbound(p);
-    /* Bare identifier → string */
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$') {
-        int ident_len;
-        char *id = parse_ident(p, &ident_len);
-        if (!id) return NULL;
-        qjson_val *v = make_val(p, QJSON_STRING);
-        if (v) { v->str.s = id; v->str.len = ident_len; }
-        return v;
-    }
-    return NULL;
-}
-
-/* ── Public parse ────────────────────────────────────────── */
+/* ── Public parse (Lemon driver) ─────────────────────────── */
 
 qjson_val *qjson_parse(qjson_arena *a, const char *text, int len) {
-    pstate p = { text, 0, len, a };
-    qjson_val *v = parse_value(&p);
-    skip_ws(&p);
-    return v;
+    qjson_lexer lex;
+    qjson_lex_init(&lex, text, len, a);
+
+    qjson_parse_ctx ctx;
+    qjson_ctx_init(&ctx, a);
+
+    void *parser = ParseAlloc(malloc);
+    if (!parser) return NULL;
+
+    qjson_token tok;
+    int tt;
+    while ((tt = qjson_lex(&lex, &tok)) > 0) {
+        Parse(parser, tt, tok, &ctx);
+        if (ctx.error) break;
+    }
+    if (!ctx.error && tt == TK_EOF)
+        Parse(parser, 0, tok, &ctx);
+
+    ParseFree(parser, free);
+
+    if (ctx.error || ctx.top != 1)
+        return NULL;
+    return ctx.stack[0];
 }
 
 /* ── Type predicates ─────────────────────────────────────── */
@@ -521,7 +188,7 @@ int qjson_is_json(const qjson_val *v) {
     if (!v) return 1;
     switch (v->type) {
     case QJSON_NULL: case QJSON_TRUE: case QJSON_FALSE:
-    case QJSON_NUM: case QJSON_STRING:
+    case QJSON_NUMBER: case QJSON_STRING:
         return 1;
     case QJSON_ARRAY:
         for (int i = 0; i < v->arr.count; i++)
@@ -535,7 +202,7 @@ int qjson_is_json(const qjson_val *v) {
             if (!qjson_is_json(v->obj.pairs[i].val)) return 0;
         }
         return 1;
-    default: /* BIGINT, BIGDEC, BIGFLOAT, BLOB, UNBOUND */
+    default: /* BIGINT, BIGDECIMAL, BIGFLOAT, BLOB, UNBOUND */
         return 0;
     }
 }
@@ -589,7 +256,7 @@ static int stringify_val(const qjson_val *v, char *buf, int pos, int cap) {
     case QJSON_NULL:  return emit(buf, pos, cap, "null", 4);
     case QJSON_TRUE:  return emit(buf, pos, cap, "true", 4);
     case QJSON_FALSE: return emit(buf, pos, cap, "false", 5);
-    case QJSON_NUM: {
+    case QJSON_NUMBER: {
         char tmp[32];
         int n = snprintf(tmp, sizeof(tmp), "%.17g", v->num);
         return emit(buf, pos, cap, tmp, n);
@@ -597,7 +264,7 @@ static int stringify_val(const qjson_val *v, char *buf, int pos, int cap) {
     case QJSON_BIGINT:
         pos = emit(buf, pos, cap, v->str.s, v->str.len);
         return emit_char(buf, pos, cap, 'N');
-    case QJSON_BIGDEC:
+    case QJSON_BIGDECIMAL:
         pos = emit(buf, pos, cap, v->str.s, v->str.len);
         return emit_char(buf, pos, cap, 'M');
     case QJSON_BIGFLOAT:
@@ -692,6 +359,48 @@ static int stringify_val(const qjson_val *v, char *buf, int pos, int cap) {
         }
         return emit_char(buf, pos, cap, '}');
     }
+    /* ── View / Datalog types ───────────────────────────────── */
+    case QJSON_VIEW:
+        pos = stringify_val(v->view.pattern, buf, pos, cap);
+        pos = emit(buf, pos, cap, " where ", 7);
+        pos = stringify_val(v->view.cond, buf, pos, cap);
+        return pos;
+    case QJSON_MATCH:
+        pos = stringify_val(v->match.pattern, buf, pos, cap);
+        pos = emit(buf, pos, cap, " in ", 4);
+        pos = stringify_val(v->match.source, buf, pos, cap);
+        return pos;
+    case QJSON_BINOP:
+        pos = stringify_val(v->binop.left, buf, pos, cap);
+        pos = emit_char(buf, pos, cap, ' ');
+        pos = emit(buf, pos, cap, v->binop.op, v->binop.op_len);
+        pos = emit_char(buf, pos, cap, ' ');
+        pos = stringify_val(v->binop.right, buf, pos, cap);
+        return pos;
+    case QJSON_NOTOP:
+        pos = emit(buf, pos, cap, "not ", 4);
+        pos = stringify_val(v->notop.operand, buf, pos, cap);
+        return pos;
+    case QJSON_EQUATION:
+        pos = stringify_val(v->equation.left, buf, pos, cap);
+        pos = emit(buf, pos, cap, " = ", 3);
+        pos = stringify_val(v->equation.right, buf, pos, cap);
+        return pos;
+    case QJSON_ARITH: {
+        int need_parens = v->binop.left && v->binop.left->type == QJSON_ARITH;
+        if (need_parens) pos = emit_char(buf, pos, cap, '(');
+        pos = stringify_val(v->binop.left, buf, pos, cap);
+        if (need_parens) pos = emit_char(buf, pos, cap, ')');
+        pos = emit_char(buf, pos, cap, ' ');
+        pos = emit(buf, pos, cap, v->binop.op, v->binop.op_len);
+        pos = emit_char(buf, pos, cap, ' ');
+        need_parens = v->binop.right && v->binop.right->type == QJSON_ARITH;
+        if (need_parens) pos = emit_char(buf, pos, cap, '(');
+        pos = stringify_val(v->binop.right, buf, pos, cap);
+        if (need_parens) pos = emit_char(buf, pos, cap, ')');
+        return pos;
+    }
+    default: break;
     }
     return pos;
 }
@@ -763,11 +472,11 @@ void qjson_project(const char *raw, int len, double *lo, double *hi) {
 void qjson_val_project(const qjson_val *v, double *lo, double *hi) {
     if (!v) { *lo = *hi = 0; return; }
     switch (v->type) {
-    case QJSON_NUM:
+    case QJSON_NUMBER:
         *lo = *hi = v->num;
         return;
     case QJSON_BIGINT:
-    case QJSON_BIGDEC:
+    case QJSON_BIGDECIMAL:
     case QJSON_BIGFLOAT:
         qjson_project(v->str.s, v->str.len, lo, hi);
         return;

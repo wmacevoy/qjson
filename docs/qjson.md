@@ -242,9 +242,9 @@ nullable                     // string "nullable"
 ```c
 typedef enum {
     QJSON_NULL, QJSON_TRUE, QJSON_FALSE,
-    QJSON_NUM,          // IEEE 754 double
+    QJSON_NUMBER,       // IEEE 754 double
     QJSON_BIGINT,       // raw string, suffix N
-    QJSON_BIGDEC,       // raw string, suffix M
+    QJSON_BIGDECIMAL,   // raw string, suffix M
     QJSON_BIGFLOAT,     // raw string, suffix L
     QJSON_BLOB,         // JS64-decoded byte array
     QJSON_STRING,

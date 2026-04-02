@@ -1,4 +1,4 @@
-# Plan: Set iteration + recursive queries in QJSON ✓ (implemented v1.1.3)
+# Plan: Set iteration + recursive queries in QJSON ✓ (v1.1.3 + views on feature/libqjson-datalog)
 
 ## Context
 
@@ -105,9 +105,25 @@ Body goal references head predicate → recursive → WITH RECURSIVE.
 - `native/qjson_sqlite_ext.c` — CTE support in SQL generation
 - Tests: graph reachability, transitive closure
 
-## That's it
+## View syntax (implemented on feature/libqjson-datalog)
 
-Everything else is already in qjson (store, update, query,
-cross-path joins, constraint solver) or lives in wyatt
-(Prolog parser, assert/retract semantics, ephemeral, react,
-native, send, fossilize).
+Views replace the `rules` object approach with WHERE/AND/OR/NOT/IN syntax:
+```
+grandparents: {grandparent: ?GP, grandchild: ?GC}
+  where {parent: ?GP, child: ?P} in parents
+    and {parent: ?P, child: ?GC} in parents
+```
+
+Implemented: Lemon grammar, lexer keywords, parse/stringify round-trip,
+in-memory resolver with unification, equation solver (`?FV = ?P * (1+?R)^?N`),
+type widening (BigDecimal uses bfdec_t base-10), reactive store with
+watch/unwatch push notifications.  288 tests.
+
+## Remaining
+
+- **Recursive views**: self-referencing `IN` needs fixpoint iteration
+  (semi-naive evaluation).  The resolver currently has no cycle detection.
+- **Wire to SQLite**: resolver works in-memory; views should also compile
+  to SQL (WITH RECURSIVE for recursive views).
+- **JS/Python native bindings**: `src/qjson.js` and `src/qjson.py` should
+  call libqjson via WASM/FFI instead of reimplementing the parser.

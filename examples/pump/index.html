@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QJSON Insulin Pump Monitor</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+         background: #0a0a1a; color: #e0e0e0; }
+  .header { padding: 16px 24px; display: flex; align-items: center; gap: 16px;
+            border-bottom: 1px solid #1a1a3a; }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .badge { font-size: 11px; padding: 2px 8px; border-radius: 4px;
+                   background: #1a3a1a; color: #4ade80; }
+  .header .badge.warn { background: #3a1a1a; color: #f87171; }
+  .header .precision { font-size: 11px; color: #666; margin-left: auto; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+  .card { background: #111128; border-radius: 12px; padding: 16px;
+          border: 1px solid #1a1a3a; }
+  .card h2 { font-size: 13px; color: #888; margin-bottom: 8px; text-transform: uppercase;
+             letter-spacing: 0.5px; }
+  .big-number { font-size: 48px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .unit { font-size: 16px; color: #666; font-weight: 400; }
+  .glucose-value { color: #4ade80; }
+  .glucose-value.high { color: #fbbf24; }
+  .glucose-value.very-high { color: #f87171; }
+  .glucose-value.low { color: #f87171; }
+  .iob-value { color: #60a5fa; }
+  .chart-row { grid-column: 1 / -1; }
+  .chart-container { height: 240px; }
+  .status-bar { padding: 8px 24px; font-size: 11px; color: #444;
+                border-top: 1px solid #1a1a3a; display: flex; gap: 24px; }
+  .status-bar .encrypted { color: #4ade80; }
+  .precision-demo { font-size: 12px; color: #555; padding: 4px 0; }
+  .precision-demo .exact { color: #4ade80; }
+  .precision-demo .inexact { color: #f87171; text-decoration: line-through; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>QJSON Insulin Pump Monitor</h1>
+  <span class="badge" id="status-badge">LIVE</span>
+  <span class="precision">
+    Decimal precision: <span class="exact">0.1M + 0.2M = 0.3M</span>
+    <span style="color:#444">(not 0.30000000000000004)</span>
+  </span>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Glucose</h2>
+    <div class="big-number glucose-value" id="glucose-val">---</div>
+    <div class="unit">mg/dL</div>
+    <div id="glucose-trend" style="font-size:13px; color:#666; margin-top:4px"></div>
+  </div>
+
+  <div class="card">
+    <h2>Insulin on Board</h2>
+    <div class="big-number iob-value" id="iob-val">---</div>
+    <div class="unit">units</div>
+    <div class="precision-demo" id="precision-demo"></div>
+  </div>
+
+  <div class="card chart-row">
+    <h2>Glucose (last 2 hours)</h2>
+    <div class="chart-container">
+      <canvas id="glucose-chart"></canvas>
+    </div>
+  </div>
+
+  <div class="card chart-row">
+    <h2>Insulin on Board</h2>
+    <div class="chart-container">
+      <canvas id="iob-chart"></canvas>
+    </div>
+  </div>
+</div>
+
+<div class="status-bar">
+  <span id="store-status">Store: initializing...</span>
+  <span id="readings-count">Readings: 0</span>
+  <span id="last-update">Last update: --</span>
+</div>
+
+<script>
+// ── QJSON decimal parsing (inline, no module needed) ──────────
+function parseDecimal(s) {
+  if (typeof s === 'number') return s;
+  if (typeof s !== 'string') return NaN;
+  // Strip M/N/L suffix
+  var cleaned = s.replace(/[MNLmnl]$/, '');
+  return parseFloat(cleaned);
+}
+
+function formatDecimal(s, digits) {
+  var n = parseDecimal(s);
+  return isNaN(n) ? '--' : n.toFixed(digits);
+}
+
+// ── Charts ────────────────────────────────────────────────────
+var glucoseData = { labels: [], datasets: [{
+  label: 'Glucose (mg/dL)',
+  data: [],
+  borderColor: '#4ade80',
+  backgroundColor: 'rgba(74, 222, 128, 0.1)',
+  fill: true,
+  tension: 0.3,
+  pointRadius: 0
+}]};
+
+var iobData = { labels: [], datasets: [{
+  label: 'IOB (units)',
+  data: [],
+  borderColor: '#60a5fa',
+  backgroundColor: 'rgba(96, 165, 250, 0.1)',
+  fill: true,
+  tension: 0.3,
+  pointRadius: 0
+}]};
+
+var chartOpts = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 300 },
+  scales: {
+    x: { display: false },
+    y: { grid: { color: '#1a1a3a' }, ticks: { color: '#666' } }
+  },
+  plugins: { legend: { display: false } }
+};
+
+var glucoseChart = new Chart(document.getElementById('glucose-chart'), {
+  type: 'line', data: glucoseData, options: Object.assign({}, chartOpts, {
+    scales: Object.assign({}, chartOpts.scales, {
+      y: { min: 40, max: 300, grid: { color: '#1a1a3a' }, ticks: { color: '#666' } }
+    })
+  })
+});
+
+var iobChart = new Chart(document.getElementById('iob-chart'), {
+  type: 'line', data: iobData, options: chartOpts
+});
+
+// ── Glucose range classification ──────────────────────────────
+function glucoseClass(val) {
+  if (val < 70) return 'low';
+  if (val > 250) return 'very-high';
+  if (val > 180) return 'high';
+  return '';
+}
+
+// ── Reading counter + precision demo ──────────────────────────
+var readingCount = 0;
+var iobSum = '0';  // track as string for precision demo
+
+// Simple string addition for precision demo
+function addDecimalStrings(a, b) {
+  // Use exact decimal: parse as integers scaled by 100
+  var fa = Math.round(parseFloat(a) * 100);
+  var fb = Math.round(parseFloat(b) * 100);
+  return ((fa + fb) / 100).toFixed(2);
+}
+
+// ── Update UI ─────────────────────────────────────────────────
+function addReading(reading) {
+  var glucose = parseDecimal(reading.glucose);
+  var iob = parseDecimal(reading.iob);
+  var time = new Date(reading.timestamp * 1000);
+  var timeStr = time.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+
+  // Update big numbers
+  var gEl = document.getElementById('glucose-val');
+  gEl.textContent = formatDecimal(reading.glucose, 1);
+  gEl.className = 'big-number glucose-value ' + glucoseClass(glucose);
+
+  document.getElementById('iob-val').textContent = formatDecimal(reading.iob, 2);
+  document.getElementById('glucose-trend').textContent = reading.trend || '';
+
+  // Precision demo: show exact M suffix values
+  var demo = document.getElementById('precision-demo');
+  demo.innerHTML = 'Raw: <span class="exact">' + reading.iob + '</span> (exact decimal)';
+
+  // Update charts
+  glucoseData.labels.push(timeStr);
+  glucoseData.datasets[0].data.push(glucose);
+  if (glucoseData.labels.length > 48) {
+    glucoseData.labels.shift();
+    glucoseData.datasets[0].data.shift();
+  }
+  glucoseChart.update();
+
+  iobData.labels.push(timeStr);
+  iobData.datasets[0].data.push(iob);
+  if (iobData.labels.length > 48) {
+    iobData.labels.shift();
+    iobData.datasets[0].data.shift();
+  }
+  iobChart.update();
+
+  // Status
+  readingCount++;
+  document.getElementById('readings-count').textContent = 'Readings: ' + readingCount;
+  document.getElementById('last-update').textContent = 'Last: ' + timeStr;
+
+  // High/low badge
+  var badge = document.getElementById('status-badge');
+  if (glucose < 70 || glucose > 250) {
+    badge.textContent = glucose < 70 ? 'LOW' : 'HIGH';
+    badge.className = 'badge warn';
+  } else {
+    badge.textContent = 'LIVE';
+    badge.className = 'badge';
+  }
+}
+
+// ── Fetch loop ────────────────────────────────────────────────
+function fetchHistory() {
+  fetch('/api/history')
+    .then(function(r) { return r.json(); })
+    .then(function(readings) {
+      document.getElementById('store-status').innerHTML =
+        'Store: <span class="encrypted">encrypted (QJSON)</span>';
+      readings.forEach(addReading);
+    })
+    .catch(function(e) {
+      document.getElementById('store-status').textContent = 'Store: ' + e.message;
+    });
+}
+
+function fetchReading() {
+  fetch('/api/reading')
+    .then(function(r) { return r.json(); })
+    .then(addReading)
+    .catch(function() {});
+}
+
+// Start
+fetchHistory();
+setInterval(fetchReading, 5000);
+</script>
+</body>
+</html>

@@ -1,28 +1,37 @@
-# Plan: qjq — QJSON query tool (v2.0)
+# Plan: qjq — QJSON query tool
 
 ## Vision
 
-One static binary. Your data encrypted. Query with paths,
-solve constraints, compute closures. 2MB, no dependencies.
+One static binary. Parse, format, query. qjq is one possible host
+for libqjson — a demo CLI that happens to be useful.
+
+libqjson is the product: a C library and SQLite extension.
+It does not embed a scripting language — the host brings its own.
+qjq uses QuickJS. Other hosts (Fossil/Tcl, Redis/Lua, Python, Node,
+browser/WASM) embed libqjson through their own language bindings.
 
 ```bash
 echo '{salary: 130000M, tax_rate: 0.24M}' | qjq
 echo '{edge: {[a,b],[b,c],[c,d]}}' | qjq --closure .edge
 qjq --db ~/data.qjson --key "..." '.items[K]' -w '.items[K].price > 100M'
-qjq --solve '.take_home == .salary * (1 - .tax_rate)' < income.qjson
 qjq --eval 'qjson_add("0.1", "0.2")'
 ```
 
 ## Architecture
 
 ```
-qjq (~2MB static binary)
-├── QuickJS          — JS engine, native BigInt/BigDecimal/BigFloat
-├── qjson.js         — parse/stringify (runs unmodified in QuickJS)
-├── qjson.c + libbf  — projection, comparison, 14 solvers
-├── SQLCipher         — encrypted SQLite (page-level, user key)
-├── LibreSSL crypto  — AES-256 for SQLCipher
-└── qjq.c           — CLI glue: args → QuickJS → SQLCipher → stdout
+libqjson (C library — the core product)
+├── qjson.c + qjson_lex.c + qjson_parse.c  — Lemon parser, stringify, project, cmp
+├── qjson_sqlite_ext.c                      — SQLite extension (all SQL functions)
+├── libbf/                                  — exact arithmetic
+├── qjson_crypto.c                          — optional (LibreSSL)
+└── qjson_types.h                           — shared bitmask enum (with libbfxx)
+
+qjq (~1MB static binary — one host for libqjson)
+├── QuickJS          — JS engine (vendored, BigInt support)
+├── qjson.js         — parse/stringify (runs in QuickJS)
+├── libqjson         — all C functions
+└── qjq.c           — CLI glue: args → QuickJS → stdout
 ```
 
 ## Build dependencies
@@ -111,25 +120,43 @@ Database:
   --export           dump database as QJSON
 ```
 
-## What exists (reuse)
+## What exists (done)
 
-- `qjson.js` — parser/serializer, runs unmodified in QuickJS
-- `qjson.c` + `libbf/` — C library, all projection/comparison
+- `native/qjq.c` — CLI glue (~170 lines)
+- `vendor/quickjs/` — vendored QuickJS 2025-09-13
+- `native/qjson_js.h` — embedded qjson.js (generated)
+- `native/libbf_shim.c` — bridges libbf↔QuickJS cutils
+- `make qjq` — builds 1.0MB binary, works today
+- `qjson.js` — parser/serializer, runs in QuickJS
+- `qjson.c` + `qjson_lex.c` + `qjson_parse.c` — Lemon parser, libqjson core
 - `qjson_sqlite_ext.c` — all SQL functions, solver, closure
-- `qjson_wasm_init.c` — auto-extension pattern (reuse for native)
-- `sqlcipher-libressl/` — existing submodule, proven build
-- `wasm/build.sh` — reference for linking everything together
-- `.github/workflows/release.yml` — multi-platform build patterns
+- `qjson_wasm_init.c` — auto-extension pattern
 
-## What's new
+## What's next
 
-- `quickjs/` submodule
-- `qjq.c` — ~500 lines of CLI glue
-- `Makefile` target: `make qjq`
-- Release workflow additions for qjq binaries
+- Phase 2: link SQLite, auto-register extension, `--db`, path queries
+- Phase 3: SQLCipher + `--key` (link LibreSSL)
+- Phase 4: solver + closure CLI flags
+- Fix qjson.js BigDecimal/BigFloat handling (QuickJS 2025 dropped native support)
+- Release workflow for static binaries
 
-## Not in scope
+## Design principle
 
+libqjson does not choose a trigger language.  qjq is one host (QuickJS).
+Other hosts embed libqjson through their own language:
+
+| Host | Language | Use case |
+|------|----------|----------|
+| qjq | QuickJS (JS) | CLI tool, pipe mode |
+| Browser | WASM | Client-side encrypted storage |
+| Fossil-like | Tcl (Jim/TH1) | SQLite-native scripting |
+| Redis-like | Lua | In-process triggers |
+| Python app | Python | `pip install qjson` |
+| Node app | JS | `npm install qjson` |
+
+## Not in scope for qjq
+
+- Embedding a trigger language in libqjson (host's job)
 - Interactive REPL (future, maybe)
-- Network/sync (lives in wyatt)
+- Network/sync
 - GUI (stays browser-based)

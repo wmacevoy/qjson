@@ -1,0 +1,3 @@
+[submodule "vendor/facts"]
+	path = vendor/facts
+	url = https://github.com/wmacevoy/facts.git
