@@ -8,6 +8,7 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <math.h>
 #include "qjson_resolve.h"
 
@@ -124,7 +125,12 @@ static int unify(qjson_arena *a, qjson_val *pattern, qjson_val *value, qjson_env
         /* Anonymous ? matches anything */
         if (pattern->str.len == 0) return 1;
         qjson_val *existing = env_lookup(env, pattern->str.s, pattern->str.len);
-        if (existing) return val_equal(existing, value);
+        if (existing) {
+            /* Bound to another UNBOUND → still free, rebind to concrete */
+            if (existing->type == QJSON_UNBOUND)
+                return env_bind(a, env, pattern->str.s, pattern->str.len, value);
+            return val_equal(existing, value);
+        }
         return env_bind(a, env, pattern->str.s, pattern->str.len, value);
     }
 
@@ -148,11 +154,25 @@ static int unify(qjson_arena *a, qjson_val *pattern, qjson_val *value, qjson_env
             if (!unify(a, pattern->arr.items[i], value->arr.items[i], env)) return 0;
         return 1;
     case QJSON_OBJECT:
-        if (pattern->obj.count != value->obj.count) return 0;
-        for (int i = 0; i < pattern->obj.count; i++) {
-            /* Match by key position (same order) */
-            if (!unify(a, pattern->obj.pairs[i].key, value->obj.pairs[i].key, env)) return 0;
-            if (!unify(a, pattern->obj.pairs[i].val, value->obj.pairs[i].val, env)) return 0;
+        /* Pattern keys must all be found in value (by key lookup, not position).
+           Pattern may have fewer keys than value (partial match).
+           Complex keys use structural equality for lookup. */
+        for (int pi = 0; pi < pattern->obj.count; pi++) {
+            qjson_val *pkey = pattern->obj.pairs[pi].key;
+            qjson_val *pval = pattern->obj.pairs[pi].val;
+            /* Find matching key in value object */
+            int found = 0;
+            for (int vi = 0; vi < value->obj.count; vi++) {
+                qjson_env key_env;
+                env_init(&key_env);
+                if (unify(a, pkey, value->obj.pairs[vi].key, &key_env)) {
+                    /* Key matched — now unify the value */
+                    if (!unify(a, pval, value->obj.pairs[vi].val, env)) return 0;
+                    found = 1;
+                    break;
+                }
+            }
+            if (!found) return 0;
         }
         return 1;
     default:
@@ -162,19 +182,26 @@ static int unify(qjson_arena *a, qjson_val *pattern, qjson_val *value, qjson_env
 
 /* ── Expression evaluation ───────────────────────────────────── */
 
-/* Convert a qjson_val to a double for arithmetic.
-   Returns 1 if successful, 0 if value can't be converted. */
-static int val_to_double(qjson_val *v, double *out) {
-    if (!v) return 0;
-    switch (v->type) {
-    case QJSON_NUMBER: *out = v->num; return 1;
-    case QJSON_BIGINT:
-    case QJSON_BIGFLOAT:
-    case QJSON_BIGDECIMAL:
-        *out = atof(v->str.s);
-        return 1;
-    default: return 0;
+/* ── Numeric helpers ─────────────────────────────────────────── */
+
+static int is_numeric(qjson_val *v) {
+    return v && (v->type & QJSON_NUMERIC);
+}
+
+static int is_exact(qjson_val *v) {
+    return v && (v->type == QJSON_BIGINT || v->type == QJSON_BIGFLOAT ||
+                 v->type == QJSON_BIGDECIMAL);
+}
+
+/* Get the string representation of a numeric value */
+static const char *val_str(qjson_val *v, char *buf, int bufsz) {
+    if (!v) return "0";
+    if (is_exact(v)) return v->str.s;
+    if (v->type == QJSON_NUMBER) {
+        snprintf(buf, bufsz, "%.17g", v->num);
+        return buf;
     }
+    return "0";
 }
 
 /* Make a NUMBER val from a double */
@@ -187,8 +214,91 @@ static qjson_val *make_number(qjson_arena *a, double d) {
     return v;
 }
 
+/* Make a BigDecimal val from a string */
+static qjson_val *make_bigdecimal(qjson_arena *a, const char *s, int len) {
+    char *p = (char *)qjson_arena_alloc(a, len + 1);
+    if (!p) return NULL;
+    memcpy(p, s, len);
+    p[len] = '\0';
+    qjson_val *v = (qjson_val *)qjson_arena_alloc(a, sizeof(qjson_val));
+    if (!v) return NULL;
+    memset(v, 0, sizeof(*v));
+    v->type = QJSON_BIGDECIMAL;
+    v->str.s = p;
+    v->str.len = len;
+    return v;
+}
+
+#ifdef QJSON_USE_LIBBF
+/* Exact arithmetic via libbf — returns BigDecimal string result */
+static qjson_val *eval_arith_exact(qjson_arena *a, char op, qjson_val *lv, qjson_val *rv) {
+    char lbuf[64], rbuf[64];
+    const char *ls = val_str(lv, lbuf, sizeof(lbuf));
+    const char *rs = val_str(rv, rbuf, sizeof(rbuf));
+
+    bf_context_t ctx;
+    bf_context_init(&ctx, _resolve_bf_realloc, NULL);
+    bf_t av, bv, res;
+    bf_init(&ctx, &av);
+    bf_init(&ctx, &bv);
+    bf_init(&ctx, &res);
+    bf_atof(&av, ls, NULL, 10, BF_PREC_INF, BF_RNDN);
+    bf_atof(&bv, rs, NULL, 10, BF_PREC_INF, BF_RNDN);
+
+    switch (op) {
+    case '+': bf_add(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+    case '-': bf_sub(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+    case '*': bf_mul(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+    case '/': bf_div(&res, &av, &bv, 256, BF_RNDN); break;
+    case '^': {
+        /* For integer exponents, use repeated multiply for exact results */
+        int64_t exp_i;
+        if (bf_get_int64(&exp_i, &bv, 0) == 0 && exp_i >= 0 && exp_i <= 1000) {
+            bf_set_ui(&res, 1);
+            for (int64_t i = 0; i < exp_i; i++)
+                bf_mul(&res, &res, &av, BF_PREC_INF, BF_RNDN);
+        } else {
+            bf_pow(&res, &av, &bv, 256, BF_RNDN | BF_FLAG_SUBNORMAL);
+        }
+        break;
+    }
+    default: break;
+    }
+
+    char *str;
+    size_t slen;
+    str = bf_ftoa(&slen, &res, 10, 0, BF_FTOA_FORMAT_FREE | BF_RNDN);
+
+    qjson_val *result = make_bigdecimal(a, str, (int)slen);
+
+    bf_realloc(&ctx, str, 0); /* free bf's string */
+    bf_delete(&res);
+    bf_delete(&bv);
+    bf_delete(&av);
+    bf_context_end(&ctx);
+    return result;
+}
+#endif
+
+/* IEEE double arithmetic fallback */
+static qjson_val *eval_arith_double(qjson_arena *a, char op, qjson_val *lv, qjson_val *rv) {
+    double l = (lv->type == QJSON_NUMBER) ? lv->num : atof(lv->str.s);
+    double r = (rv->type == QJSON_NUMBER) ? rv->num : atof(rv->str.s);
+    double result;
+    switch (op) {
+    case '+': result = l + r; break;
+    case '-': result = l - r; break;
+    case '*': result = l * r; break;
+    case '/': result = (r != 0) ? l / r : 0; break;
+    case '^': result = pow(l, r); break;
+    default: return NULL;
+    }
+    return make_number(a, result);
+}
+
 /* Evaluate an arithmetic expression with bound variables.
-   Returns a concrete value, or NULL if evaluation fails (unbound var). */
+   Returns a concrete value, or NULL if evaluation fails (unbound var).
+   Uses libbf exact arithmetic when any operand is BigInt/BigFloat/BigDecimal. */
 static qjson_val *eval_expr(qjson_arena *a, qjson_val *expr, const qjson_env *env) {
     if (!expr) return NULL;
 
@@ -201,27 +311,20 @@ static qjson_val *eval_expr(qjson_arena *a, qjson_val *expr, const qjson_env *en
     }
 
     /* Concrete value: return as-is */
-    if (expr->type == QJSON_NUMBER || expr->type == QJSON_BIGINT ||
-        expr->type == QJSON_BIGFLOAT || expr->type == QJSON_BIGDECIMAL)
-        return expr;
+    if (is_numeric(expr)) return expr;
 
     /* Arithmetic: evaluate both sides, compute */
     if (expr->type == QJSON_ARITH) {
         qjson_val *lv = eval_expr(a, expr->binop.left, env);
         qjson_val *rv = eval_expr(a, expr->binop.right, env);
-        if (!lv || !rv) return NULL;
-        double l, r;
-        if (!val_to_double(lv, &l) || !val_to_double(rv, &r)) return NULL;
-        double result;
-        switch (expr->binop.op[0]) {
-        case '+': result = l + r; break;
-        case '-': result = l - r; break;
-        case '*': result = l * r; break;
-        case '/': result = (r != 0) ? l / r : 0; break;
-        case '^': result = pow(l, r); break;
-        default: return NULL;
-        }
-        return make_number(a, result);
+        if (!lv || !rv || !is_numeric(lv) || !is_numeric(rv)) return NULL;
+
+#ifdef QJSON_USE_LIBBF
+        /* Use exact arithmetic if either operand is BigInt/BigFloat/BigDecimal */
+        if (is_exact(lv) || is_exact(rv))
+            return eval_arith_exact(a, expr->binop.op[0], lv, rv);
+#endif
+        return eval_arith_double(a, expr->binop.op[0], lv, rv);
     }
 
     return expr;
@@ -238,10 +341,20 @@ static int check_equation(qjson_arena *a, qjson_val *eqn, qjson_env *env) {
     qjson_val *rv = eval_expr(a, eqn->equation.right, env);
 
     if (lv && rv) {
-        /* Both evaluated: check equality */
-        double l, r;
-        if (val_to_double(lv, &l) && val_to_double(rv, &r))
-            return fabs(l - r) < 1e-10; /* tolerance for floating point */
+        /* Both evaluated: check equality.
+           For exact types, use string comparison. For doubles, use tolerance. */
+        if (is_exact(lv) || is_exact(rv)) {
+            char lb[64], rb[64];
+            const char *ls = val_str(lv, lb, sizeof(lb));
+            const char *rs = val_str(rv, rb, sizeof(rb));
+#ifdef QJSON_USE_LIBBF
+            return qjson_decimal_cmp(ls, (int)strlen(ls), rs, (int)strlen(rs)) == 0;
+#else
+            return strcmp(ls, rs) == 0;
+#endif
+        }
+        if (lv->type == QJSON_NUMBER && rv->type == QJSON_NUMBER)
+            return fabs(lv->num - rv->num) < 1e-10;
         return val_equal(lv, rv);
     }
 

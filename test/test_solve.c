@@ -107,6 +107,42 @@ int main(void) {
         }
     }
 
+    /* Exact arithmetic with BigDecimal: 0.1M + 0.2M = 0.3M (not 0.30000000000000004) */
+    printf("\n=== Exact BigDecimal arithmetic ===\n");
+    qjson_arena_reset(&a);
+    const char *d4 = "{ calc: ?X where ?X = 0.1M + 0.2M }";
+    facts = qjson_parse(&a, d4, (int)strlen(d4));
+    TEST("parse exact", facts != NULL);
+    qjson_val *r4 = qjson_resolve(&a, facts, qjson_obj_get(facts, "calc"));
+    TEST("solve 0.1M+0.2M", r4 != NULL && r4->arr.count == 1);
+    if (r4 && r4->arr.count == 1) {
+        n = qjson_stringify(r4->arr.items[0], out, sizeof(out));
+        printf("  0.1M + 0.2M = %.*s\n", n, out);
+        /* Must be exactly "0.3", not 0.30000000000000004 */
+        TEST("exact 0.3M", r4->arr.items[0]->type == QJSON_BIGDECIMAL &&
+             strcmp(r4->arr.items[0]->str.s, "0.3") == 0);
+    }
+
+    /* Compound interest with BigDecimal: 1000M * (1 + 0.05M) ^ 10 */
+    printf("\n=== Exact compound interest ===\n");
+    qjson_arena_reset(&a);
+    const char *d5 =
+        "{ compound: {P: ?P, R: ?R, N: ?N, FV: ?FV}"
+        "    where ?FV = ?P * (1M + ?R) ^ ?N }";
+    facts = qjson_parse(&a, d5, (int)strlen(d5));
+    TEST("parse exact compound", facts != NULL);
+    const char *q5 = "{P: 1000M, R: 0.05M, N: 10, FV: ?FV}";
+    qjson_val *query5 = qjson_parse(&a, q5, (int)strlen(q5));
+    qjson_val *r5 = qjson_select(&a, facts, "compound", query5);
+    TEST("solve exact FV", r5 != NULL && r5->arr.count == 1);
+    if (r5 && r5->arr.count == 1) {
+        n = qjson_stringify(r5->arr.items[0], out, sizeof(out));
+        printf("  exact result: %.*s\n", n, out);
+        qjson_val *fv5 = qjson_obj_get(r5->arr.items[0], "FV");
+        TEST("FV is BigDecimal", fv5 != NULL && fv5->type == QJSON_BIGDECIMAL);
+        if (fv5) printf("  FV = %.*sM (exact)\n", fv5->str.len, fv5->str.s);
+    }
+
     printf("\n%d/%d tests passed\n", pass, pass + fail);
     return fail ? 1 : 0;
 }

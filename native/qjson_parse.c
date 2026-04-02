@@ -155,18 +155,18 @@ typedef union {
 #define ParseCTX_PARAM
 #define ParseCTX_FETCH
 #define ParseCTX_STORE
-#define YYNSTATE             40
-#define YYNRULE              45
-#define YYNRULE_WITH_ACTION  29
+#define YYNSTATE             42
+#define YYNRULE              46
+#define YYNRULE_WITH_ACTION  30
 #define YYNTOKEN             31
-#define YY_MAX_SHIFT         39
-#define YY_MIN_SHIFTREDUCE   71
-#define YY_MAX_SHIFTREDUCE   115
-#define YY_ERROR_ACTION      116
-#define YY_ACCEPT_ACTION     117
-#define YY_NO_ACTION         118
-#define YY_MIN_REDUCE        119
-#define YY_MAX_REDUCE        163
+#define YY_MAX_SHIFT         41
+#define YY_MIN_SHIFTREDUCE   73
+#define YY_MAX_SHIFTREDUCE   118
+#define YY_ERROR_ACTION      119
+#define YY_ACCEPT_ACTION     120
+#define YY_NO_ACTION         121
+#define YY_MIN_REDUCE        122
+#define YY_MAX_REDUCE        167
 #define YY_MIN_DSTRCTR       0
 #define YY_MAX_DSTRCTR       0
 /************* End control #defines *******************************************/
@@ -251,100 +251,104 @@ typedef union {
 **  yy_default[]       Default action for each state.
 **
 *********** Begin parsing tables **********************************************/
-#define YY_ACTTAB_COUNT (319)
+#define YY_ACTTAB_COUNT (326)
 static const YYACTIONTYPE yy_action[] = {
- /*     0 */    38,   39,   20,    2,   20,   14,   20,  149,   20,    6,
- /*    10 */    17,   71,   72,   73,   74,   75,   76,   77,   78,   79,
- /*    20 */    80,   81,    8,   84,    4,   18,   87,   16,   83,    1,
- /*    30 */    71,   72,   73,   74,   75,   76,   77,   78,   79,   80,
- /*    40 */    81,    5,   84,   15,   85,   87,   71,   72,   73,   74,
- /*    50 */    75,   76,   77,   78,   79,   80,   81,   86,   84,  118,
- /*    60 */   118,   87,  118,  118,    7,   71,   72,   73,   74,   75,
- /*    70 */    76,   77,   78,   79,   80,   81,   82,   84,    3,    4,
- /*    80 */    87,   71,   72,   73,   74,   75,   76,   77,   78,   79,
- /*    90 */    80,   81,  118,   84,  118,  118,   87,   34,  118,   34,
- /*   100 */    14,  118,  118,   34,    6,  118,  118,   27,   27,   21,
- /*   110 */    34,  118,   34,   14,  118,  118,   34,    6,  118,  118,
- /*   120 */   140,  140,   22,   34,  118,   34,   14,  118,  118,   34,
- /*   130 */     6,  118,  118,   35,   35,   22,   34,  118,   34,   14,
- /*   140 */   148,  118,   34,    6,  118,  118,  138,  138,   22,   34,
- /*   150 */   118,   34,   14,  118,  118,   34,    6,  118,  118,   28,
- /*   160 */    28,   22,  117,   29,   30,   29,   14,  118,    5,   29,
- /*   170 */     6,   37,  118,   37,   14,  118,  118,   37,    6,   19,
- /*   180 */    19,  118,   13,  118,   12,   11,   10,    9,    8,   23,
- /*   190 */   118,   23,   14,  118,  118,   23,    6,   31,  118,   31,
- /*   200 */    14,   23,  118,   31,    6,   10,    9,    8,  115,   31,
- /*   210 */   118,   32,  118,   32,   14,  118,  118,   32,    6,   33,
- /*   220 */   118,   33,   14,   32,  118,   33,    6,    3,    4,  118,
- /*   230 */    25,   33,   25,   14,  118,  118,   25,    6,  118,  118,
- /*   240 */   118,   26,   25,   26,   14,  118,  118,   26,    6,  118,
- /*   250 */   118,  118,   24,   26,   24,   14,  113,  118,   24,    6,
- /*   260 */   118,  118,  118,  118,   24,   36,  157,   36,   14,  118,
- /*   270 */   118,   36,    6,  118,   37,  118,   37,   14,  118,  118,
- /*   280 */    37,    6,   13,  155,   12,   11,   10,    9,    8,   12,
- /*   290 */    11,   10,    9,    8,  118,  118,  118,  141,  118,  141,
- /*   300 */    14,  118,  118,  141,    6,  152,  118,  152,   14,  118,
- /*   310 */   118,  152,    6,  115,   12,   11,   10,    9,    8,
+ /*     0 */    40,   41,   21,    2,   21,   15,   21,    8,   21,    6,
+ /*    10 */   153,   73,   74,   75,   76,   77,   78,   79,   80,   81,
+ /*    20 */    82,   83,    9,   86,   18,   19,   89,    8,   17,    1,
+ /*    30 */     4,   73,   74,   75,   76,   77,   78,   79,   80,   81,
+ /*    40 */    82,   83,    5,   86,   16,   85,   89,   88,  121,    7,
+ /*    50 */    73,   74,   75,   76,   77,   78,   79,   80,   81,   82,
+ /*    60 */    83,  121,   86,  121,   87,   89,   73,   74,   75,   76,
+ /*    70 */    77,   78,   79,   80,   81,   82,   83,   84,   86,    3,
+ /*    80 */     4,   89,   73,   74,   75,   76,   77,   78,   79,   80,
+ /*    90 */    81,   82,   83,   36,   86,   36,   15,   89,  121,   36,
+ /*   100 */     6,  121,  121,   28,   28,   22,   36,  121,   36,   15,
+ /*   110 */   121,  121,   36,    6,  121,  121,  143,  143,   23,   36,
+ /*   120 */   121,   36,   15,  121,  121,   36,    6,  121,  121,   37,
+ /*   130 */    37,   23,   36,  121,   36,   15,  152,  121,   36,    6,
+ /*   140 */   121,  121,  141,  141,   23,   36,  121,   36,   15,  121,
+ /*   150 */   121,   36,    6,  121,  121,   29,   29,   23,  120,   30,
+ /*   160 */    31,   30,   15,  121,    5,   30,    6,   39,  121,   39,
+ /*   170 */    15,  121,  121,   39,    6,   20,   20,  121,   14,  121,
+ /*   180 */    13,   12,   11,   10,    9,   24,  121,   24,   15,  121,
+ /*   190 */   121,   24,    6,   32,  121,   32,   15,   24,  121,   32,
+ /*   200 */     6,   11,   10,    9,  118,   32,  121,   33,  121,   33,
+ /*   210 */    15,  121,  121,   33,    6,   34,  121,   34,   15,   33,
+ /*   220 */   121,   34,    6,    3,    4,  121,   35,   34,   35,   15,
+ /*   230 */   121,  121,   35,    6,  121,  121,  121,   26,   35,   26,
+ /*   240 */    15,  121,  121,   26,    6,  121,  121,  121,   27,   26,
+ /*   250 */    27,   15,  116,  121,   27,    6,  121,  121,  121,   25,
+ /*   260 */    27,   25,   15,  121,  121,   25,    6,  121,  121,  121,
+ /*   270 */   121,   25,   38,  161,   38,   15,  121,  121,   38,    6,
+ /*   280 */   121,   39,  121,   39,   15,  121,  121,   39,    6,   14,
+ /*   290 */   159,   13,   12,   11,   10,    9,   13,   12,   11,   10,
+ /*   300 */     9,  121,  121,  121,  144,  121,  144,   15,  121,  121,
+ /*   310 */   144,    6,  156,  121,  156,   15,  121,  121,  156,    6,
+ /*   320 */   118,   13,   12,   11,   10,    9,
 };
 static const YYCODETYPE yy_lookahead[] = {
- /*     0 */    37,   37,   32,    3,   34,   35,   36,    0,   38,   39,
- /*    10 */     5,   11,   12,   13,   14,   15,   16,   17,   18,   19,
- /*    20 */    20,   21,   10,   23,    2,   24,   26,   24,   22,   29,
- /*    30 */    11,   12,   13,   14,   15,   16,   17,   18,   19,   20,
- /*    40 */    21,   28,   23,   27,   25,   26,   11,   12,   13,   14,
- /*    50 */    15,   16,   17,   18,   19,   20,   21,   25,   23,   45,
- /*    60 */    45,   26,   45,   45,   29,   11,   12,   13,   14,   15,
- /*    70 */    16,   17,   18,   19,   20,   21,   22,   23,    1,    2,
- /*    80 */    26,   11,   12,   13,   14,   15,   16,   17,   18,   19,
- /*    90 */    20,   21,   45,   23,   45,   45,   26,   32,   45,   34,
- /*   100 */    35,   45,   45,   38,   39,   45,   45,   42,   43,   44,
- /*   110 */    32,   45,   34,   35,   45,   45,   38,   39,   45,   45,
- /*   120 */    42,   43,   44,   32,   45,   34,   35,   45,   45,   38,
- /*   130 */    39,   45,   45,   42,   43,   44,   32,   45,   34,   35,
- /*   140 */     0,   45,   38,   39,   45,   45,   42,   43,   44,   32,
- /*   150 */    45,   34,   35,   45,   45,   38,   39,   45,   45,   42,
- /*   160 */    43,   44,   31,   32,   33,   34,   35,   45,   28,   38,
- /*   170 */    39,   32,   45,   34,   35,   45,   45,   38,   39,   40,
- /*   180 */    41,   45,    4,   45,    6,    7,    8,    9,   10,   32,
- /*   190 */    45,   34,   35,   45,   45,   38,   39,   32,   45,   34,
- /*   200 */    35,   44,   45,   38,   39,    8,    9,   10,   30,   44,
- /*   210 */    45,   32,   45,   34,   35,   45,   45,   38,   39,   32,
- /*   220 */    45,   34,   35,   44,   45,   38,   39,    1,    2,   45,
- /*   230 */    32,   44,   34,   35,   45,   45,   38,   39,   45,   45,
- /*   240 */    45,   32,   44,   34,   35,   45,   45,   38,   39,   45,
- /*   250 */    45,   45,   32,   44,   34,   35,   30,   45,   38,   39,
- /*   260 */    45,   45,   45,   45,   44,   32,   33,   34,   35,   45,
- /*   270 */    45,   38,   39,   45,   32,   45,   34,   35,   45,   45,
- /*   280 */    38,   39,    4,   41,    6,    7,    8,    9,   10,    6,
- /*   290 */     7,    8,    9,   10,   45,   45,   45,   32,   45,   34,
- /*   300 */    35,   45,   45,   38,   39,   32,   45,   34,   35,   45,
- /*   310 */    45,   38,   39,   30,    6,    7,    8,    9,   10,   45,
- /*   320 */    45,   45,   45,   45,   45,   45,   45,   45,   45,   45,
+ /*     0 */    37,   37,   32,    3,   34,   35,   36,    7,   38,   39,
+ /*    10 */     0,   11,   12,   13,   14,   15,   16,   17,   18,   19,
+ /*    20 */    20,   21,   10,   23,    5,   24,   26,    7,   24,   29,
+ /*    30 */     2,   11,   12,   13,   14,   15,   16,   17,   18,   19,
+ /*    40 */    20,   21,   28,   23,   27,   22,   26,   25,   45,   29,
+ /*    50 */    11,   12,   13,   14,   15,   16,   17,   18,   19,   20,
+ /*    60 */    21,   45,   23,   45,   25,   26,   11,   12,   13,   14,
+ /*    70 */    15,   16,   17,   18,   19,   20,   21,   22,   23,    1,
+ /*    80 */     2,   26,   11,   12,   13,   14,   15,   16,   17,   18,
+ /*    90 */    19,   20,   21,   32,   23,   34,   35,   26,   45,   38,
+ /*   100 */    39,   45,   45,   42,   43,   44,   32,   45,   34,   35,
+ /*   110 */    45,   45,   38,   39,   45,   45,   42,   43,   44,   32,
+ /*   120 */    45,   34,   35,   45,   45,   38,   39,   45,   45,   42,
+ /*   130 */    43,   44,   32,   45,   34,   35,    0,   45,   38,   39,
+ /*   140 */    45,   45,   42,   43,   44,   32,   45,   34,   35,   45,
+ /*   150 */    45,   38,   39,   45,   45,   42,   43,   44,   31,   32,
+ /*   160 */    33,   34,   35,   45,   28,   38,   39,   32,   45,   34,
+ /*   170 */    35,   45,   45,   38,   39,   40,   41,   45,    4,   45,
+ /*   180 */     6,    7,    8,    9,   10,   32,   45,   34,   35,   45,
+ /*   190 */    45,   38,   39,   32,   45,   34,   35,   44,   45,   38,
+ /*   200 */    39,    8,    9,   10,   30,   44,   45,   32,   45,   34,
+ /*   210 */    35,   45,   45,   38,   39,   32,   45,   34,   35,   44,
+ /*   220 */    45,   38,   39,    1,    2,   45,   32,   44,   34,   35,
+ /*   230 */    45,   45,   38,   39,   45,   45,   45,   32,   44,   34,
+ /*   240 */    35,   45,   45,   38,   39,   45,   45,   45,   32,   44,
+ /*   250 */    34,   35,   30,   45,   38,   39,   45,   45,   45,   32,
+ /*   260 */    44,   34,   35,   45,   45,   38,   39,   45,   45,   45,
+ /*   270 */    45,   44,   32,   33,   34,   35,   45,   45,   38,   39,
+ /*   280 */    45,   32,   45,   34,   35,   45,   45,   38,   39,    4,
+ /*   290 */    41,    6,    7,    8,    9,   10,    6,    7,    8,    9,
+ /*   300 */    10,   45,   45,   45,   32,   45,   34,   35,   45,   45,
+ /*   310 */    38,   39,   32,   45,   34,   35,   45,   45,   38,   39,
+ /*   320 */    30,    6,    7,    8,    9,   10,   45,   45,   45,   45,
  /*   330 */    45,   45,   45,   45,   45,   45,   45,   45,   45,   45,
- /*   340 */    45,   45,   45,   45,   45,   45,   31,   31,   31,   31,
+ /*   340 */    45,   45,   45,   45,   45,   45,   45,   45,   45,   45,
+ /*   350 */    45,   45,   45,   31,   31,   31,   31,
 };
-#define YY_SHIFT_COUNT    (39)
+#define YY_SHIFT_COUNT    (41)
 #define YY_SHIFT_MIN      (0)
-#define YY_SHIFT_MAX      (308)
+#define YY_SHIFT_MAX      (315)
 static const unsigned short int yy_shift_ofst[] = {
- /*     0 */    70,    0,    0,    0,    0,    0,   19,   35,   35,   35,
- /*    10 */    35,   35,   35,   35,   54,   70,   70,   70,   70,    3,
- /*    20 */     1,  178,  278,  283,  308,  197,  197,  226,   77,  140,
- /*    30 */     7,   12,   12,   12,    5,   22,   13,   16,   32,    6,
+ /*     0 */    71,    0,    0,    0,    0,    0,   39,   20,   20,   20,
+ /*    10 */    20,   20,   20,   20,   20,   55,   71,   71,   71,   71,
+ /*    20 */     4,    1,  174,  285,  290,  315,  193,  193,  222,   78,
+ /*    30 */   136,   10,   12,   12,   12,   12,   19,   28,   14,   17,
+ /*    40 */    22,   23,
 };
-#define YY_REDUCE_COUNT (20)
+#define YY_REDUCE_COUNT (21)
 #define YY_REDUCE_MIN   (-37)
-#define YY_REDUCE_MAX   (273)
+#define YY_REDUCE_MAX   (280)
 static const short yy_reduce_ofst[] = {
- /*     0 */   131,   65,   78,   91,  104,  117,  139,  157,  165,  179,
- /*    10 */   187,  198,  209,  220,  -30,  233,  242,  265,  273,  -37,
- /*    20 */   -36,
+ /*     0 */   127,   61,   74,   87,  100,  113,  135,  153,  161,  175,
+ /*    10 */   183,  194,  205,  216,  227,  -30,  240,  249,  272,  280,
+ /*    20 */   -37,  -36,
 };
 static const YYACTIONTYPE yy_default[] = {
- /*     0 */   116,  116,  116,  116,  116,  116,  116,  116,  116,  116,
- /*    10 */   116,  116,  116,  116,  116,  116,  159,  116,  159,  158,
- /*    20 */   158,  116,  116,  116,  142,  144,  143,  116,  137,  116,
- /*    30 */   116,  147,  146,  145,  162,  139,  156,  136,  116,  116,
+ /*     0 */   119,  119,  119,  119,  119,  119,  119,  119,  119,  119,
+ /*    10 */   119,  119,  119,  119,  119,  119,  119,  163,  119,  163,
+ /*    20 */   162,  162,  119,  119,  119,  145,  147,  146,  119,  140,
+ /*    30 */   119,  119,  151,  150,  149,  148,  166,  142,  160,  139,
+ /*    40 */   119,  119,
 };
 /********** End of lemon-generated parsing tables *****************************/
 
@@ -528,22 +532,23 @@ static const char *const yyRuleName[] = {
  /*  26 */ "expr ::= expr TK_STAR expr",
  /*  27 */ "expr ::= expr TK_SLASH expr",
  /*  28 */ "expr ::= expr TK_CARET expr",
- /*  29 */ "input ::= value",
- /*  30 */ "input ::= view_def",
- /*  31 */ "value ::= array",
- /*  32 */ "elements ::= value",
- /*  33 */ "elements ::= elements TK_COMMA value",
- /*  34 */ "value ::= object",
- /*  35 */ "entries ::= entry",
- /*  36 */ "entries ::= entries TK_COMMA entry",
- /*  37 */ "entry ::= value TK_COLON value",
- /*  38 */ "entry ::= value TK_COLON view_def",
- /*  39 */ "opt_comma ::=",
- /*  40 */ "opt_comma ::= TK_COMMA",
- /*  41 */ "condition ::= match_clause",
- /*  42 */ "condition ::= TK_LPAREN condition TK_RPAREN",
- /*  43 */ "expr ::= value",
- /*  44 */ "expr ::= TK_LPAREN expr TK_RPAREN",
+ /*  29 */ "expr ::= TK_MINUS expr",
+ /*  30 */ "input ::= value",
+ /*  31 */ "input ::= view_def",
+ /*  32 */ "value ::= array",
+ /*  33 */ "elements ::= value",
+ /*  34 */ "elements ::= elements TK_COMMA value",
+ /*  35 */ "value ::= object",
+ /*  36 */ "entries ::= entry",
+ /*  37 */ "entries ::= entries TK_COMMA entry",
+ /*  38 */ "entry ::= value TK_COLON value",
+ /*  39 */ "entry ::= value TK_COLON view_def",
+ /*  40 */ "opt_comma ::=",
+ /*  41 */ "opt_comma ::= TK_COMMA",
+ /*  42 */ "condition ::= match_clause",
+ /*  43 */ "condition ::= TK_LPAREN condition TK_RPAREN",
+ /*  44 */ "expr ::= value",
+ /*  45 */ "expr ::= TK_LPAREN expr TK_RPAREN",
 };
 #endif /* NDEBUG */
 
@@ -993,22 +998,23 @@ static const YYCODETYPE yyRuleInfoLhs[] = {
     44,  /* (26) expr ::= expr TK_STAR expr */
     44,  /* (27) expr ::= expr TK_SLASH expr */
     44,  /* (28) expr ::= expr TK_CARET expr */
-    31,  /* (29) input ::= value */
-    31,  /* (30) input ::= view_def */
-    32,  /* (31) value ::= array */
-    36,  /* (32) elements ::= value */
-    36,  /* (33) elements ::= elements TK_COMMA value */
-    32,  /* (34) value ::= object */
-    40,  /* (35) entries ::= entry */
-    40,  /* (36) entries ::= entries TK_COMMA entry */
-    41,  /* (37) entry ::= value TK_COLON value */
-    41,  /* (38) entry ::= value TK_COLON view_def */
-    37,  /* (39) opt_comma ::= */
-    37,  /* (40) opt_comma ::= TK_COMMA */
-    42,  /* (41) condition ::= match_clause */
-    42,  /* (42) condition ::= TK_LPAREN condition TK_RPAREN */
-    44,  /* (43) expr ::= value */
-    44,  /* (44) expr ::= TK_LPAREN expr TK_RPAREN */
+    44,  /* (29) expr ::= TK_MINUS expr */
+    31,  /* (30) input ::= value */
+    31,  /* (31) input ::= view_def */
+    32,  /* (32) value ::= array */
+    36,  /* (33) elements ::= value */
+    36,  /* (34) elements ::= elements TK_COMMA value */
+    32,  /* (35) value ::= object */
+    40,  /* (36) entries ::= entry */
+    40,  /* (37) entries ::= entries TK_COMMA entry */
+    41,  /* (38) entry ::= value TK_COLON value */
+    41,  /* (39) entry ::= value TK_COLON view_def */
+    37,  /* (40) opt_comma ::= */
+    37,  /* (41) opt_comma ::= TK_COMMA */
+    42,  /* (42) condition ::= match_clause */
+    42,  /* (43) condition ::= TK_LPAREN condition TK_RPAREN */
+    44,  /* (44) expr ::= value */
+    44,  /* (45) expr ::= TK_LPAREN expr TK_RPAREN */
 };
 
 /* For rule J, yyRuleInfoNRhs[J] contains the negative of the number
@@ -1043,22 +1049,23 @@ static const signed char yyRuleInfoNRhs[] = {
    -3,  /* (26) expr ::= expr TK_STAR expr */
    -3,  /* (27) expr ::= expr TK_SLASH expr */
    -3,  /* (28) expr ::= expr TK_CARET expr */
-   -1,  /* (29) input ::= value */
-   -1,  /* (30) input ::= view_def */
-   -1,  /* (31) value ::= array */
-   -1,  /* (32) elements ::= value */
-   -3,  /* (33) elements ::= elements TK_COMMA value */
-   -1,  /* (34) value ::= object */
-   -1,  /* (35) entries ::= entry */
-   -3,  /* (36) entries ::= entries TK_COMMA entry */
-   -3,  /* (37) entry ::= value TK_COLON value */
-   -3,  /* (38) entry ::= value TK_COLON view_def */
-    0,  /* (39) opt_comma ::= */
-   -1,  /* (40) opt_comma ::= TK_COMMA */
-   -1,  /* (41) condition ::= match_clause */
-   -3,  /* (42) condition ::= TK_LPAREN condition TK_RPAREN */
-   -1,  /* (43) expr ::= value */
-   -3,  /* (44) expr ::= TK_LPAREN expr TK_RPAREN */
+   -2,  /* (29) expr ::= TK_MINUS expr */
+   -1,  /* (30) input ::= value */
+   -1,  /* (31) input ::= view_def */
+   -1,  /* (32) value ::= array */
+   -1,  /* (33) elements ::= value */
+   -3,  /* (34) elements ::= elements TK_COMMA value */
+   -1,  /* (35) value ::= object */
+   -1,  /* (36) entries ::= entry */
+   -3,  /* (37) entries ::= entries TK_COMMA entry */
+   -3,  /* (38) entry ::= value TK_COLON value */
+   -3,  /* (39) entry ::= value TK_COLON view_def */
+    0,  /* (40) opt_comma ::= */
+   -1,  /* (41) opt_comma ::= TK_COMMA */
+   -1,  /* (42) condition ::= match_clause */
+   -3,  /* (43) condition ::= TK_LPAREN condition TK_RPAREN */
+   -1,  /* (44) expr ::= value */
+   -3,  /* (45) expr ::= TK_LPAREN expr TK_RPAREN */
 };
 
 static void yy_accept(yyParser*);  /* Forward Declaration */
@@ -1105,7 +1112,7 @@ static YYACTIONTYPE yy_reduce(
     qjson_val *v = qjson_ctx_alloc_val(ctx, QJSON_NULL);
     qjson_ctx_push(ctx, v);
 }
-#line 1108 "native/qjson_parse.c"
+#line 1115 "native/qjson_parse.c"
         break;
       case 1: /* value ::= TK_TRUE */
 #line 52 "native/qjson_parse.y"
@@ -1113,7 +1120,7 @@ static YYACTIONTYPE yy_reduce(
     qjson_val *v = qjson_ctx_alloc_val(ctx, QJSON_TRUE);
     qjson_ctx_push(ctx, v);
 }
-#line 1116 "native/qjson_parse.c"
+#line 1123 "native/qjson_parse.c"
         break;
       case 2: /* value ::= TK_FALSE */
 #line 57 "native/qjson_parse.y"
@@ -1121,7 +1128,7 @@ static YYACTIONTYPE yy_reduce(
     qjson_val *v = qjson_ctx_alloc_val(ctx, QJSON_FALSE);
     qjson_ctx_push(ctx, v);
 }
-#line 1124 "native/qjson_parse.c"
+#line 1131 "native/qjson_parse.c"
         break;
       case 3: /* value ::= TK_NUMBER */
 #line 62 "native/qjson_parse.y"
@@ -1130,7 +1137,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) v->num = yymsp[0].minor.yy0.num;
     qjson_ctx_push(ctx, v);
 }
-#line 1133 "native/qjson_parse.c"
+#line 1140 "native/qjson_parse.c"
         break;
       case 4: /* value ::= TK_NUMBER_N */
 #line 68 "native/qjson_parse.y"
@@ -1139,7 +1146,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) { v->str.s = yymsp[0].minor.yy0.start; v->str.len = yymsp[0].minor.yy0.len; }
     qjson_ctx_push(ctx, v);
 }
-#line 1142 "native/qjson_parse.c"
+#line 1149 "native/qjson_parse.c"
         break;
       case 5: /* value ::= TK_NUMBER_M */
 #line 74 "native/qjson_parse.y"
@@ -1148,7 +1155,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) { v->str.s = yymsp[0].minor.yy0.start; v->str.len = yymsp[0].minor.yy0.len; }
     qjson_ctx_push(ctx, v);
 }
-#line 1151 "native/qjson_parse.c"
+#line 1158 "native/qjson_parse.c"
         break;
       case 6: /* value ::= TK_NUMBER_L */
 #line 80 "native/qjson_parse.y"
@@ -1157,7 +1164,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) { v->str.s = yymsp[0].minor.yy0.start; v->str.len = yymsp[0].minor.yy0.len; }
     qjson_ctx_push(ctx, v);
 }
-#line 1160 "native/qjson_parse.c"
+#line 1167 "native/qjson_parse.c"
         break;
       case 7: /* value ::= TK_STRING */
       case 10: /* value ::= TK_IDENT */ yytestcase(yyruleno==10);
@@ -1167,7 +1174,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) { v->str.s = yymsp[0].minor.yy0.decoded; v->str.len = yymsp[0].minor.yy0.decoded_len; }
     qjson_ctx_push(ctx, v);
 }
-#line 1170 "native/qjson_parse.c"
+#line 1177 "native/qjson_parse.c"
         break;
       case 8: /* value ::= TK_BLOB */
 #line 92 "native/qjson_parse.y"
@@ -1176,7 +1183,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) { v->blob.data = yymsp[0].minor.yy0.decoded; v->blob.len = yymsp[0].minor.yy0.decoded_len; }
     qjson_ctx_push(ctx, v);
 }
-#line 1179 "native/qjson_parse.c"
+#line 1186 "native/qjson_parse.c"
         break;
       case 9: /* value ::= TK_UNBOUND */
 #line 98 "native/qjson_parse.y"
@@ -1185,7 +1192,7 @@ static YYACTIONTYPE yy_reduce(
     if (v) { v->str.s = yymsp[0].minor.yy0.decoded; v->str.len = yymsp[0].minor.yy0.decoded_len; }
     qjson_ctx_push(ctx, v);
 }
-#line 1188 "native/qjson_parse.c"
+#line 1195 "native/qjson_parse.c"
         break;
       case 11: /* array ::= arr_open TK_RBRACKET */
       case 12: /* array ::= arr_open elements opt_comma TK_RBRACKET */ yytestcase(yyruleno==12);
@@ -1193,7 +1200,7 @@ static YYACTIONTYPE yy_reduce(
 {
     qjson_ctx_push_array(ctx);
 }
-#line 1196 "native/qjson_parse.c"
+#line 1203 "native/qjson_parse.c"
         break;
       case 13: /* arr_open ::= TK_LBRACKET */
       case 16: /* obj_open ::= TK_LBRACE */ yytestcase(yyruleno==16);
@@ -1201,7 +1208,7 @@ static YYACTIONTYPE yy_reduce(
 {
     qjson_ctx_push_mark(ctx);
 }
-#line 1204 "native/qjson_parse.c"
+#line 1211 "native/qjson_parse.c"
         break;
       case 14: /* object ::= obj_open TK_RBRACE */
       case 15: /* object ::= obj_open entries opt_comma TK_RBRACE */ yytestcase(yyruleno==15);
@@ -1209,7 +1216,7 @@ static YYACTIONTYPE yy_reduce(
 {
     qjson_ctx_push_object(ctx);
 }
-#line 1212 "native/qjson_parse.c"
+#line 1219 "native/qjson_parse.c"
         break;
       case 17: /* entry ::= value */
 #line 152 "native/qjson_parse.y"
@@ -1217,92 +1224,108 @@ static YYACTIONTYPE yy_reduce(
     qjson_val *t = qjson_ctx_alloc_val(ctx, QJSON_TRUE);
     qjson_ctx_push(ctx, t);
 }
-#line 1220 "native/qjson_parse.c"
+#line 1227 "native/qjson_parse.c"
         break;
       case 18: /* view_def ::= value TK_WHERE condition */
 #line 167 "native/qjson_parse.y"
 {
     qjson_ctx_push_view(ctx);
 }
-#line 1227 "native/qjson_parse.c"
+#line 1234 "native/qjson_parse.c"
         break;
       case 19: /* condition ::= condition TK_AND condition */
 #line 175 "native/qjson_parse.y"
 {
     qjson_ctx_push_binop(ctx, "and", 3);
 }
-#line 1234 "native/qjson_parse.c"
+#line 1241 "native/qjson_parse.c"
         break;
       case 20: /* condition ::= condition TK_OR condition */
 #line 179 "native/qjson_parse.y"
 {
     qjson_ctx_push_binop(ctx, "or", 2);
 }
-#line 1241 "native/qjson_parse.c"
+#line 1248 "native/qjson_parse.c"
         break;
       case 21: /* condition ::= TK_NOT condition */
 #line 183 "native/qjson_parse.y"
 {
     qjson_ctx_push_notop(ctx);
 }
-#line 1248 "native/qjson_parse.c"
+#line 1255 "native/qjson_parse.c"
         break;
       case 22: /* match_clause ::= value TK_IN value */
 #line 191 "native/qjson_parse.y"
 {
     qjson_ctx_push_match(ctx);
 }
-#line 1255 "native/qjson_parse.c"
+#line 1262 "native/qjson_parse.c"
         break;
       case 23: /* condition ::= expr TK_EQ expr */
 #line 197 "native/qjson_parse.y"
 {
     qjson_ctx_push_equation(ctx);
 }
-#line 1262 "native/qjson_parse.c"
+#line 1269 "native/qjson_parse.c"
         break;
       case 24: /* expr ::= expr TK_PLUS expr */
 #line 204 "native/qjson_parse.y"
 { qjson_ctx_push_arith(ctx, "+", 1); }
-#line 1267 "native/qjson_parse.c"
+#line 1274 "native/qjson_parse.c"
         break;
       case 25: /* expr ::= expr TK_MINUS expr */
 #line 205 "native/qjson_parse.y"
 { qjson_ctx_push_arith(ctx, "-", 1); }
-#line 1272 "native/qjson_parse.c"
+#line 1279 "native/qjson_parse.c"
         break;
       case 26: /* expr ::= expr TK_STAR expr */
 #line 206 "native/qjson_parse.y"
 { qjson_ctx_push_arith(ctx, "*", 1); }
-#line 1277 "native/qjson_parse.c"
+#line 1284 "native/qjson_parse.c"
         break;
       case 27: /* expr ::= expr TK_SLASH expr */
 #line 207 "native/qjson_parse.y"
 { qjson_ctx_push_arith(ctx, "/", 1); }
-#line 1282 "native/qjson_parse.c"
+#line 1289 "native/qjson_parse.c"
         break;
       case 28: /* expr ::= expr TK_CARET expr */
 #line 208 "native/qjson_parse.y"
 { qjson_ctx_push_arith(ctx, "^", 1); }
-#line 1287 "native/qjson_parse.c"
+#line 1294 "native/qjson_parse.c"
+        break;
+      case 29: /* expr ::= TK_MINUS expr */
+#line 209 "native/qjson_parse.y"
+{ /* unary minus = 0 - expr */
+    qjson_val *zero = qjson_ctx_alloc_val(ctx, QJSON_NUMBER);
+    if (zero) zero->num = 0;
+    qjson_ctx_push(ctx, zero);  /* push zero under the expr */
+    /* stack: [..., expr, zero] — need to swap */
+    if (ctx->top >= 2) {
+        qjson_val *e = ctx->stack[ctx->top - 2];
+        ctx->stack[ctx->top - 2] = ctx->stack[ctx->top - 1];
+        ctx->stack[ctx->top - 1] = e;
+    }
+    qjson_ctx_push_arith(ctx, "-", 1);
+}
+#line 1310 "native/qjson_parse.c"
         break;
       default:
-      /* (29) input ::= value */ yytestcase(yyruleno==29);
-      /* (30) input ::= view_def */ yytestcase(yyruleno==30);
-      /* (31) value ::= array (OPTIMIZED OUT) */ assert(yyruleno!=31);
-      /* (32) elements ::= value (OPTIMIZED OUT) */ assert(yyruleno!=32);
-      /* (33) elements ::= elements TK_COMMA value */ yytestcase(yyruleno==33);
-      /* (34) value ::= object (OPTIMIZED OUT) */ assert(yyruleno!=34);
-      /* (35) entries ::= entry (OPTIMIZED OUT) */ assert(yyruleno!=35);
-      /* (36) entries ::= entries TK_COMMA entry */ yytestcase(yyruleno==36);
-      /* (37) entry ::= value TK_COLON value */ yytestcase(yyruleno==37);
-      /* (38) entry ::= value TK_COLON view_def */ yytestcase(yyruleno==38);
-      /* (39) opt_comma ::= */ yytestcase(yyruleno==39);
-      /* (40) opt_comma ::= TK_COMMA */ yytestcase(yyruleno==40);
-      /* (41) condition ::= match_clause (OPTIMIZED OUT) */ assert(yyruleno!=41);
-      /* (42) condition ::= TK_LPAREN condition TK_RPAREN */ yytestcase(yyruleno==42);
-      /* (43) expr ::= value */ yytestcase(yyruleno==43);
-      /* (44) expr ::= TK_LPAREN expr TK_RPAREN */ yytestcase(yyruleno==44);
+      /* (30) input ::= value */ yytestcase(yyruleno==30);
+      /* (31) input ::= view_def */ yytestcase(yyruleno==31);
+      /* (32) value ::= array (OPTIMIZED OUT) */ assert(yyruleno!=32);
+      /* (33) elements ::= value (OPTIMIZED OUT) */ assert(yyruleno!=33);
+      /* (34) elements ::= elements TK_COMMA value */ yytestcase(yyruleno==34);
+      /* (35) value ::= object (OPTIMIZED OUT) */ assert(yyruleno!=35);
+      /* (36) entries ::= entry (OPTIMIZED OUT) */ assert(yyruleno!=36);
+      /* (37) entries ::= entries TK_COMMA entry */ yytestcase(yyruleno==37);
+      /* (38) entry ::= value TK_COLON value */ yytestcase(yyruleno==38);
+      /* (39) entry ::= value TK_COLON view_def */ yytestcase(yyruleno==39);
+      /* (40) opt_comma ::= */ yytestcase(yyruleno==40);
+      /* (41) opt_comma ::= TK_COMMA */ yytestcase(yyruleno==41);
+      /* (42) condition ::= match_clause (OPTIMIZED OUT) */ assert(yyruleno!=42);
+      /* (43) condition ::= TK_LPAREN condition TK_RPAREN */ yytestcase(yyruleno==43);
+      /* (44) expr ::= value */ yytestcase(yyruleno==44);
+      /* (45) expr ::= TK_LPAREN expr TK_RPAREN */ yytestcase(yyruleno==45);
         break;
 /********** End reduce actions ************************************************/
   };
@@ -1347,7 +1370,7 @@ static void yy_parse_failed(
 #line 26 "native/qjson_parse.y"
 
     ctx->error = 1;
-#line 1350 "native/qjson_parse.c"
+#line 1373 "native/qjson_parse.c"
 /************ End %parse_failure code *****************************************/
   ParseARG_STORE /* Suppress warning about unused %extra_argument variable */
   ParseCTX_STORE
@@ -1369,7 +1392,7 @@ static void yy_syntax_error(
 #line 22 "native/qjson_parse.y"
 
     ctx->error = 1;
-#line 1372 "native/qjson_parse.c"
+#line 1395 "native/qjson_parse.c"
 /************ End %syntax_error code ******************************************/
   ParseARG_STORE /* Suppress warning about unused %extra_argument variable */
   ParseCTX_STORE

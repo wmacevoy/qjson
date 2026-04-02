@@ -206,4 +206,16 @@ expr ::= expr TK_MINUS expr. { qjson_ctx_push_arith(ctx, "-", 1); }
 expr ::= expr TK_STAR expr.  { qjson_ctx_push_arith(ctx, "*", 1); }
 expr ::= expr TK_SLASH expr. { qjson_ctx_push_arith(ctx, "/", 1); }
 expr ::= expr TK_CARET expr. { qjson_ctx_push_arith(ctx, "^", 1); }
+expr ::= TK_MINUS expr. [TK_CARET] { /* unary minus = 0 - expr */
+    qjson_val *zero = qjson_ctx_alloc_val(ctx, QJSON_NUMBER);
+    if (zero) zero->num = 0;
+    qjson_ctx_push(ctx, zero);  /* push zero under the expr */
+    /* stack: [..., expr, zero] — need to swap */
+    if (ctx->top >= 2) {
+        qjson_val *e = ctx->stack[ctx->top - 2];
+        ctx->stack[ctx->top - 2] = ctx->stack[ctx->top - 1];
+        ctx->stack[ctx->top - 1] = e;
+    }
+    qjson_ctx_push_arith(ctx, "-", 1);
+}
 expr ::= TK_LPAREN expr TK_RPAREN.
