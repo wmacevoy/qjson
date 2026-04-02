@@ -216,3 +216,64 @@ void qjson_unwatch(qjson_db *db, int watch_id) {
         }
     }
 }
+
+/* ── Brain operations ───────────────────────────────────────── */
+
+int qjson_ephemeral(qjson_db *db, const char *set_name, qjson_val *temp_val,
+                    qjson_ephemeral_fn fn, void *userdata) {
+    /* Save current state */
+    qjson_entry *e = find_entry(db, set_name);
+    qjson_val *saved = e ? e->val : NULL;
+    int was_view = e ? e->is_view : 0;
+
+    /* Assert: merge temp_val into the set (or create it) */
+    qjson_db_set(db, set_name, temp_val);  /* watchers fire */
+
+    /* Call the function — brain reacts */
+    int result = fn(db, userdata);
+
+    /* Retract: restore original state */
+    if (saved) {
+        if (was_view)
+            qjson_db_define(db, set_name, saved);
+        else
+            qjson_db_set(db, set_name, saved);  /* watchers fire again */
+    } else {
+        /* Entry didn't exist before — remove it */
+        qjson_entry *e2 = find_entry(db, set_name);
+        if (e2) { e2->val = NULL; }
+        fire_watchers(db, set_name);
+    }
+
+    return result;
+}
+
+void qjson_mineralize(qjson_db *db, const char *view_name) {
+    qjson_entry *ve = find_entry(db, view_name);
+    if (!ve || !ve->is_view) return;
+
+    /* Resolve the view to concrete results */
+    qjson_val *results = qjson_db_resolve(db, view_name);
+    if (!results) return;
+
+    /* Replace the view with facts */
+    ve->is_view = 0;
+    ve->dep_count = 0;
+    ve->val = results;
+
+    /* Notify: this "set" now has concrete data */
+    fire_watchers(db, view_name);
+}
+
+void qjson_fossilize(qjson_db *db) {
+    /* Collect view names first (mineralizing changes entries) */
+    const char *views[MAX_ENTRIES];
+    int nviews = 0;
+    for (int i = 0; i < db->entry_count; i++) {
+        if (db->entries[i].is_view)
+            views[nviews++] = db->entries[i].name;
+    }
+    /* Mineralize each */
+    for (int i = 0; i < nviews; i++)
+        qjson_mineralize(db, views[i]);
+}
