@@ -230,51 +230,113 @@ static qjson_val *make_bigdecimal(qjson_arena *a, const char *s, int len) {
 }
 
 #ifdef QJSON_USE_LIBBF
-/* Exact arithmetic via libbf — returns BigDecimal string result */
+/* Widen type: max(a, b) in the numeric hierarchy.
+   NUMBER(0x021) < BIGINT(0x022) < BIGFLOAT(0x024) < BIGDECIMAL(0x028) */
+static qjson_type widen_type(qjson_val *lv, qjson_val *rv) {
+    qjson_type lt = lv->type & QJSON_NUMERIC ? lv->type : QJSON_NUMBER;
+    qjson_type rt = rv->type & QJSON_NUMERIC ? rv->type : QJSON_NUMBER;
+    return lt > rt ? lt : rt;
+}
+
+/* Exact arithmetic via libbf.
+   BIGDECIMAL → bfdec_t (base-10, exact for 0.1 + 0.2 = 0.3)
+   BIGINT/BIGFLOAT → bf_t (base-2, exact for integers and binary floats) */
 static qjson_val *eval_arith_exact(qjson_arena *a, char op, qjson_val *lv, qjson_val *rv) {
     char lbuf[64], rbuf[64];
     const char *ls = val_str(lv, lbuf, sizeof(lbuf));
     const char *rs = val_str(rv, rbuf, sizeof(rbuf));
+    qjson_type widened = widen_type(lv, rv);
 
     bf_context_t ctx;
     bf_context_init(&ctx, _resolve_bf_realloc, NULL);
-    bf_t av, bv, res;
-    bf_init(&ctx, &av);
-    bf_init(&ctx, &bv);
-    bf_init(&ctx, &res);
-    bf_atof(&av, ls, NULL, 10, BF_PREC_INF, BF_RNDN);
-    bf_atof(&bv, rs, NULL, 10, BF_PREC_INF, BF_RNDN);
-
-    switch (op) {
-    case '+': bf_add(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
-    case '-': bf_sub(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
-    case '*': bf_mul(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
-    case '/': bf_div(&res, &av, &bv, 256, BF_RNDN); break;
-    case '^': {
-        /* For integer exponents, use repeated multiply for exact results */
-        int64_t exp_i;
-        if (bf_get_int64(&exp_i, &bv, 0) == 0 && exp_i >= 0 && exp_i <= 1000) {
-            bf_set_ui(&res, 1);
-            for (int64_t i = 0; i < exp_i; i++)
-                bf_mul(&res, &res, &av, BF_PREC_INF, BF_RNDN);
-        } else {
-            bf_pow(&res, &av, &bv, 256, BF_RNDN | BF_FLAG_SUBNORMAL);
-        }
-        break;
-    }
-    default: break;
-    }
 
     char *str;
     size_t slen;
-    str = bf_ftoa(&slen, &res, 10, 0, BF_FTOA_FORMAT_FREE | BF_RNDN);
+
+    if (widened == QJSON_BIGDECIMAL) {
+        /* Base-10 decimal arithmetic — exact for 0.1 + 0.2 */
+        bfdec_t av, bv, res;
+        bfdec_init(&ctx, &av);
+        bfdec_init(&ctx, &bv);
+        bfdec_init(&ctx, &res);
+        bfdec_atof(&av, ls, NULL, BF_PREC_INF, BF_RNDN);
+        bfdec_atof(&bv, rs, NULL, BF_PREC_INF, BF_RNDN);
+
+        switch (op) {
+        case '+': bfdec_add(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+        case '-': bfdec_sub(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+        case '*': bfdec_mul(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+        case '/': bfdec_div(&res, &av, &bv, 60, BF_RNDN); break;
+        case '^': {
+            /* Integer exponent: repeated multiply in base-10 */
+            int64_t exp_i = 0;
+            /* Parse exponent as integer */
+            char *endp;
+            exp_i = strtoll(rs, &endp, 10);
+            if (*endp == '\0' && exp_i >= 0 && exp_i <= 1000) {
+                bfdec_set_ui(&res, 1);
+                for (int64_t i = 0; i < exp_i; i++)
+                    bfdec_mul(&res, &res, &av, BF_PREC_INF, BF_RNDN);
+            } else {
+                /* Non-integer exponent: widen to bf_t, use bf_pow */
+                bf_t ba, bb, br;
+                bf_init(&ctx, &ba); bf_init(&ctx, &bb); bf_init(&ctx, &br);
+                bf_atof(&ba, ls, NULL, 10, BF_PREC_INF, BF_RNDN);
+                bf_atof(&bb, rs, NULL, 10, BF_PREC_INF, BF_RNDN);
+                bf_pow(&br, &ba, &bb, 256, BF_RNDN | BF_FLAG_SUBNORMAL);
+                str = bf_ftoa(&slen, &br, 10, 0, BF_FTOA_FORMAT_FREE | BF_RNDN);
+                bf_delete(&br); bf_delete(&bb); bf_delete(&ba);
+                bfdec_delete(&res); bfdec_delete(&bv); bfdec_delete(&av);
+                qjson_val *result = make_bigdecimal(a, str, (int)slen);
+                bf_realloc(&ctx, str, 0);
+                bf_context_end(&ctx);
+                return result;
+            }
+            break;
+        }
+        default: break;
+        }
+
+        str = bfdec_ftoa(&slen, &res, 0, BF_FTOA_FORMAT_FREE | BF_RNDN);
+        bfdec_delete(&res);
+        bfdec_delete(&bv);
+        bfdec_delete(&av);
+    } else {
+        /* Base-2 binary float arithmetic */
+        bf_t av, bv, res;
+        bf_init(&ctx, &av);
+        bf_init(&ctx, &bv);
+        bf_init(&ctx, &res);
+        bf_atof(&av, ls, NULL, 10, BF_PREC_INF, BF_RNDN);
+        bf_atof(&bv, rs, NULL, 10, BF_PREC_INF, BF_RNDN);
+
+        switch (op) {
+        case '+': bf_add(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+        case '-': bf_sub(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+        case '*': bf_mul(&res, &av, &bv, BF_PREC_INF, BF_RNDN); break;
+        case '/': bf_div(&res, &av, &bv, 256, BF_RNDN); break;
+        case '^': {
+            int64_t exp_i;
+            if (bf_get_int64(&exp_i, &bv, 0) == 0 && exp_i >= 0 && exp_i <= 1000) {
+                bf_set_ui(&res, 1);
+                for (int64_t i = 0; i < exp_i; i++)
+                    bf_mul(&res, &res, &av, BF_PREC_INF, BF_RNDN);
+            } else {
+                bf_pow(&res, &av, &bv, 256, BF_RNDN | BF_FLAG_SUBNORMAL);
+            }
+            break;
+        }
+        default: break;
+        }
+
+        str = bf_ftoa(&slen, &res, 10, 0, BF_FTOA_FORMAT_FREE | BF_RNDN);
+        bf_delete(&res);
+        bf_delete(&bv);
+        bf_delete(&av);
+    }
 
     qjson_val *result = make_bigdecimal(a, str, (int)slen);
-
-    bf_realloc(&ctx, str, 0); /* free bf's string */
-    bf_delete(&res);
-    bf_delete(&bv);
-    bf_delete(&av);
+    bf_realloc(&ctx, str, 0);
     bf_context_end(&ctx);
     return result;
 }
