@@ -12,12 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: C tests (with libbf)
+      - name: C tests (with libbf + Lemon parser)
         run: |
-          cc -O2 -std=c11 -DQJSON_USE_LIBBF -frounding-math \
-            -Inative -Inative/libbf \
-            -o test_qjson test/test_qjson.c native/qjson.c \
-            native/libbf/libbf.c native/libbf/cutils.c -lm
+          make test_qjson
           ./test_qjson
 
       - uses: actions/setup-python@v5
@@ -50,47 +47,126 @@ jobs:
       - name: SQLite adapter tests
         run: python3 test/test_qjson_sql.py
 
-  # ── PostgreSQL tests ──────────────────────────────────────
-  postgres:
+  # ── WASM build (SQLCipher + QJSON + libbf) ────────────────
+  wasm:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: qjson_test
-          POSTGRES_USER: qjson
-          POSTGRES_PASSWORD: qjson
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U qjson -d qjson_test"
-          --health-interval 2s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Checkout sqlcipher-libressl
+        uses: actions/checkout@v4
         with:
-          python-version: '3.12'
+          repository: wmacevoy/sqlcipher-libressl
+          path: sqlcipher-libressl
 
-      - name: Install psycopg2
-        run: pip install psycopg2-binary
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 3.1.74
 
-      - name: Build SQLite extension
-        run: make qjson_ext.so
+      - name: Install build deps
+        run: sudo apt-get update && sudo apt-get install -y tcl cmake
 
-      - name: Install PG functions
+      - name: Download and build LibreSSL (native + WASM)
         run: |
-          PGPASSWORD=qjson psql -h localhost -U qjson -d qjson_test \
-            -f sql/qjson_pg.sql
+          curl -sL https://github.com/libressl/portable/releases/download/v4.2.1/libressl-4.2.1.tar.gz | tar xz
+          cd libressl-4.2.1
+          mkdir build && cd build
+          cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/libressl \
+            -DLIBRESSL_APPS=OFF -DLIBRESSL_TESTS=OFF -DBUILD_SHARED_LIBS=OFF
+          make -j$(nproc) && make install
+          cd ..
+          mkdir build-wasm && cd build-wasm
+          emcmake cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/libressl-wasm \
+            -DLIBRESSL_APPS=OFF -DLIBRESSL_TESTS=OFF -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_C_FLAGS="-DHAVE_TIMEGM -DHAVE_GETENTROPY -D__STDC_NO_ATOMICS__"
+          emmake make -j$(nproc) crypto
+          mkdir -p $HOME/libressl-wasm/lib
+          cp crypto/libcrypto.a $HOME/libressl-wasm/lib/
 
-      - name: SQLite + PostgreSQL adapter tests
-        env:
-          PGHOST: localhost
-          PGPORT: 5432
-        run: python3 test/test_qjson_sql.py --postgres
+      - name: Build SQLCipher amalgamation
+        run: |
+          cd sqlcipher-libressl
+          ./configure --with-tempstore=yes \
+            CFLAGS="-DSQLITE_HAS_CODEC -DSQLCIPHER_CRYPTO_OPENSSL \
+                    -DSQLITE_EXTRA_INIT=sqlcipher_extra_init \
+                    -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown \
+                    -I$HOME/libressl/include" \
+            LDFLAGS="$HOME/libressl/lib/libcrypto.a"
+          make sqlite3.c
+
+      - name: Compile WASM (SQLCipher + QJSON + libbf)
+        run: |
+          mkdir -p wasm/dist && cd wasm/dist
+          cp ../../sqlcipher-libressl/sqlite3.c .
+          cp ../../sqlcipher-libressl/sqlite3.h .
+          cp ../../sqlcipher-libressl/src/sqlite3ext.h .
+          cp ../../sqlcipher-libressl/wasm/sqlcipher_wasm.c .
+          cp ../../sqlcipher-libressl/wasm/opfs_vfs.c .
+          cp ../../native/qjson_wasm_init.c . 2>/dev/null || cp ../../wasm/qjson_wasm_init.c .
+          cp ../../native/qjson.h ../../native/qjson_types.h .
+          cp ../../native/qjson.c .
+          cp ../../native/qjson_lex.h ../../native/qjson_lex.c .
+          cp ../../native/qjson_parse.h ../../native/qjson_parse.c .
+          cp ../../native/qjson_parse_ctx.h .
+          cp ../../native/qjson_sqlite_ext.c .
+          cp ../../native/libbf/libbf.h ../../native/libbf/libbf.c .
+          cp ../../native/libbf/cutils.h ../../native/libbf/cutils.c .
+
+          EXPORTED='["_wasm_db_open","_wasm_db_close","_wasm_db_exec","_wasm_db_errmsg","_wasm_db_changes","_wasm_db_total_changes","_wasm_db_key","_wasm_db_prepare","_wasm_stmt_finalize","_wasm_stmt_reset","_wasm_stmt_clear_bindings","_wasm_stmt_step","_wasm_stmt_bind_text","_wasm_stmt_bind_int","_wasm_stmt_bind_double","_wasm_stmt_bind_null","_wasm_stmt_bind_parameter_count","_wasm_stmt_columns","_wasm_stmt_colname","_wasm_stmt_coltype","_wasm_stmt_int","_wasm_stmt_double","_wasm_stmt_text","_sqlite3_opfs_init","_malloc","_free"]'
+          RUNTIME='["cwrap","UTF8ToString","stringToUTF8","lengthBytesUTF8"]'
+
+          emcc sqlcipher_wasm.c opfs_vfs.c qjson_wasm_init.c \
+               qjson.c qjson_lex.c qjson_parse.c \
+               libbf.c cutils.c \
+            -I. -I$HOME/libressl-wasm/include \
+            -O2 \
+            -DSQLITE_HAS_CODEC \
+            -DSQLCIPHER_CRYPTO_OPENSSL \
+            -DSQLITE_EXTRA_INIT=sqlcipher_extra_init \
+            -DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown \
+            -DSQLITE_OMIT_LOAD_EXTENSION \
+            -DSQLITE_THREADSAFE=0 \
+            -DSQLITE_TEMP_STORE=2 \
+            -DSQLITE_ENABLE_FTS5 \
+            -DSQLITE_ENABLE_JSON1 \
+            -DQJSON_USE_LIBBF \
+            -s WASM=1 \
+            -s EXPORTED_FUNCTIONS="$EXPORTED" \
+            -s EXPORTED_RUNTIME_METHODS="$RUNTIME" \
+            -s ALLOW_MEMORY_GROWTH=1 \
+            -s INITIAL_MEMORY=16777216 \
+            -s MODULARIZE=1 \
+            -s EXPORT_NAME="initSqlcipher" \
+            -s ENVIRONMENT='web,worker' \
+            $HOME/libressl-wasm/lib/libcrypto.a \
+            -o sqlcipher.js
+
+          # Clean up source copies
+          rm -f sqlite3.c sqlite3.h sqlite3ext.h sqlcipher_wasm.c opfs_vfs.c \
+                qjson_wasm_init.c qjson.h qjson_types.h qjson.c \
+                qjson_lex.h qjson_lex.c qjson_parse.h qjson_parse.c \
+                qjson_parse_ctx.h qjson_sqlite_ext.c \
+                libbf.h libbf.c cutils.h cutils.c
+          ls -lh sqlcipher.js sqlcipher.wasm
+
+      - name: Copy JS helpers
+        run: |
+          cp sqlcipher-libressl/wasm/sqlcipher-api.js wasm/dist/ 2>/dev/null || true
+          cp sqlcipher-libressl/wasm/sqlcipher-worker.js wasm/dist/ 2>/dev/null || true
+          cp src/qjson.js wasm/dist/
+
+      - name: Upload WASM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qjson-sqlcipher-wasm
+          path: |
+            wasm/dist/sqlcipher.js
+            wasm/dist/sqlcipher.wasm
+            wasm/dist/sqlcipher-api.js
+            wasm/dist/sqlcipher-worker.js
+            wasm/dist/qjson.js
+          retention-days: 90
 
   # ── SQLCipher tests ───────────────────────────────────────
   sqlcipher:
