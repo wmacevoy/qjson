@@ -138,6 +138,15 @@ void qjson_db_set(qjson_db *db, const char *name, qjson_val *val) {
     fire_watchers(db, name);
 }
 
+void qjson_db_retract(qjson_db *db, const char *name) {
+    qjson_entry *e = find_entry(db, name);
+    if (!e || !e->val) return;
+    e->val = NULL;
+    e->is_view = 0;
+    e->dep_count = 0;
+    fire_watchers(db, name);
+}
+
 qjson_val *qjson_db_get(qjson_db *db, const char *name) {
     qjson_entry *e = find_entry(db, name);
     return e ? e->val : NULL;

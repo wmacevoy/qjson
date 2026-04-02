@@ -29,9 +29,11 @@ typedef struct qjson_db qjson_db;
 qjson_db *qjson_db_open(qjson_arena *arena);
 void      qjson_db_close(qjson_db *db);
 
-/* Store a named fact set (concrete values — objects, arrays, sets).
-   Fires watchers for any views that depend on this name. */
+/* Assert: store a named fact set.  Fires watchers. */
 void qjson_db_set(qjson_db *db, const char *name, qjson_val *val);
+
+/* Retract: remove a named fact set.  Fires watchers. */
+void qjson_db_retract(qjson_db *db, const char *name);
 
 /* Get a named value (fact set or view) */
 qjson_val *qjson_db_get(qjson_db *db, const char *name);
