@@ -57,7 +57,7 @@ int main(void) {
         " {parent: carol, child: dave}, {parent: dave, child: eve}}";
     qjson_val *parents_what_if = qjson_parse(&a, ps_what_if, (int)strlen(ps_what_if));
 
-    int eph_result = qjson_ephemeral(db, "parents", parents_what_if, check_what_if, NULL);
+    int eph_result = qjson_signal(db, "parents", parents_what_if, check_what_if, NULL);
     TEST("during ephemeral 3 gps", ephemeral_gp_count == 3);
     TEST("ephemeral returns 42", eph_result == 42);
 
@@ -70,7 +70,7 @@ int main(void) {
 
     TEST("gp is view", qjson_db_get(db, "gp")->type == QJSON_VIEW);
 
-    qjson_mineralize(db, "gp");
+    qjson_freeze(db, "gp");
 
     qjson_val *gp_facts = qjson_db_get(db, "gp");
     TEST("gp is array after mineralize", gp_facts && gp_facts->type == QJSON_ARRAY);
@@ -91,7 +91,7 @@ int main(void) {
     TEST("gp is view", qjson_db_get(db, "gp")->type == QJSON_VIEW);
     TEST("parent_names is view", qjson_db_get(db, "parent_names")->type == QJSON_VIEW);
 
-    qjson_fossilize(db);
+    qjson_freeze_all(db);
 
     TEST("gp fossilized", qjson_db_get(db, "gp")->type == QJSON_ARRAY);
     TEST("parent_names fossilized", qjson_db_get(db, "parent_names")->type == QJSON_ARRAY);

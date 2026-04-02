@@ -60,20 +60,17 @@ int qjson_view_deps(qjson_val *view, const char **deps, int max_deps);
 
 /* ── Brain operations ───────────────────────────────────────── */
 
-/* Ephemeral: assert a temporary fact, fire watchers, call fn,
-   then retract and fire watchers again.  Scoped "what if."
-   The fact does not persist.  Returns fn's return value. */
-typedef int (*qjson_ephemeral_fn)(qjson_db *db, void *userdata);
-int qjson_ephemeral(qjson_db *db, const char *set_name, qjson_val *temp_val,
-                    qjson_ephemeral_fn fn, void *userdata);
+/* Signal: assert a transient fact, fire watchers, call fn,
+   then retract and fire watchers again.  Never stored.
+   Returns fn's return value. */
+typedef int (*qjson_signal_fn)(qjson_db *db, void *userdata);
+int qjson_signal(qjson_db *db, const char *set_name, qjson_val *temp_val,
+                 qjson_signal_fn fn, void *userdata);
 
-/* Mineralize: freeze a view into concrete facts.
-   Resolves the view, replaces its definition with the results.
-   Watchers fire (the "set" became facts). */
-void qjson_mineralize(qjson_db *db, const char *view_name);
-
-/* Fossilize: mineralize all views (except sets marked ephemeral).
-   Snapshot the entire deductive state into concrete facts. */
-void qjson_fossilize(qjson_db *db);
+/* Freeze a view into concrete facts.  Resolves the view,
+   replaces its definition with the results.  Immutable.
+   With name: freeze one predicate.  Without: freeze all. */
+void qjson_freeze(qjson_db *db, const char *view_name);
+void qjson_freeze_all(qjson_db *db);
 
 #endif

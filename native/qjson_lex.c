@@ -300,7 +300,7 @@ int qjson_lex(qjson_lexer *lex, qjson_token *tok) {
     if (c == '+') { lex->pos++; tok->type = TK_PLUS;  return TK_PLUS; }
     if (c == '*') { lex->pos++; tok->type = TK_STAR;  return TK_STAR; }
     if (c == '/') {
-        /* Check it's not a comment (// or /*) */
+        /* Not a comment start? Then it's division. */
         if (lex->pos + 1 < lex->end &&
             (lex->src[lex->pos+1] == '/' || lex->src[lex->pos+1] == '*')) {
             /* Comments are handled in skip_ws, shouldn't get here */

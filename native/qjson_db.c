@@ -219,8 +219,8 @@ void qjson_unwatch(qjson_db *db, int watch_id) {
 
 /* ── Brain operations ───────────────────────────────────────── */
 
-int qjson_ephemeral(qjson_db *db, const char *set_name, qjson_val *temp_val,
-                    qjson_ephemeral_fn fn, void *userdata) {
+int qjson_signal(qjson_db *db, const char *set_name, qjson_val *temp_val,
+                 qjson_signal_fn fn, void *userdata) {
     /* Save current state */
     qjson_entry *e = find_entry(db, set_name);
     qjson_val *saved = e ? e->val : NULL;
@@ -248,7 +248,7 @@ int qjson_ephemeral(qjson_db *db, const char *set_name, qjson_val *temp_val,
     return result;
 }
 
-void qjson_mineralize(qjson_db *db, const char *view_name) {
+void qjson_freeze(qjson_db *db, const char *view_name) {
     qjson_entry *ve = find_entry(db, view_name);
     if (!ve || !ve->is_view) return;
 
@@ -265,15 +265,14 @@ void qjson_mineralize(qjson_db *db, const char *view_name) {
     fire_watchers(db, view_name);
 }
 
-void qjson_fossilize(qjson_db *db) {
-    /* Collect view names first (mineralizing changes entries) */
+void qjson_freeze_all(qjson_db *db) {
+    /* Collect view names first (freezing changes entries) */
     const char *views[MAX_ENTRIES];
     int nviews = 0;
     for (int i = 0; i < db->entry_count; i++) {
         if (db->entries[i].is_view)
             views[nviews++] = db->entries[i].name;
     }
-    /* Mineralize each */
     for (int i = 0; i < nviews; i++)
-        qjson_mineralize(db, views[i]);
+        qjson_freeze(db, views[i]);
 }
