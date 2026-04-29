@@ -40,38 +40,43 @@ and comparison primitives that datalog calls into.
 | `libbf/` | Vendored libbf (exact directed rounding + arithmetic) |
 | `lemon/` | Vendored Lemon parser generator |
 
+`vendor/quickjs/` is vendored only for the attic'd `qjq` host;
+foundation does not depend on it.
+
 Foundation rules: C11, arena-allocated (zero malloc for values),
 no global mutable state, libbf is the baseline truth for arithmetic.
 
 ### Living space — hosts
 
-Hosts bring their own language and bind to the foundation:
+Hosts bring their own language and bind to the foundation. **There are
+no working hosts in this tree right now.** The previous hosts all
+embedded legacy reimplementations rather than calling the foundation;
+they have been parked in `attic/` until proper bindings are built.
 
-| Host | Stack | Status |
-|------|-------|--------|
-| `qjq` | QuickJS + libqjson, vendored at `vendor/quickjs/`, glue at `native/qjq.c` | CLI tool |
-| Python | `pip install qjson` (future: native bindings to libqjson) | currently `src/qjson.py` is a legacy reimplementation |
-| Node / Browser | `npm install qjson` (future: WASM build of libqjson) | currently `src/qjson.js` is a legacy reimplementation |
-| WASM | `wasm/qjson_wasm_init.c` auto-registers via `sqlite3_auto_extension` | CI artifact |
+| Host | Plan | Current state |
+|------|------|---------------|
+| `qjq` (CLI) | QuickJS + libqjson FFI | Attic: `attic/native/qjq.c` embeds `attic/src/qjson.js`. See `PLAN-qjq.md`. |
+| Python | `pip install qjson`, native bindings to libqjson | Attic: `attic/src/qjson.py`, `qjson_sql.py`, `qjson_query.py`, `qjq.py` — legacy reimplementations. |
+| Node / Browser | `npm install qjson`, WASM build of libqjson | Attic: `attic/src/qjson.js`, `qjson-sql.js`. WASM build script is broken pending real bindings. |
+| WASM | `wasm/qjson_wasm_init.c` auto-registers via `sqlite3_auto_extension` | Source intact but `wasm/build-wasm.sh` disabled — references attic JS. |
 
-`src/qjson.{js,py}` and `src/qjson{-,_}sql.{js,py}` are **legacy** — they
-reimplement format and SQL adapter logic that should come from the foundation.
-The plan is to replace them with thin bindings that call libqjson via
-WASM (browser/Node) or FFI (Python).
+**Rule**: a new host must call libqjson (foundation) for parse,
+projection, comparison, and arithmetic. It must not reimplement them.
 
 ## Commands
 
 ```bash
 make                       # qjson_ext.dylib (SQLite extension)
-make qjq                   # qjq CLI (QuickJS + libqjson)
-make test                  # C tests + Python format tests + SQL tests
-
+make test                  # C foundation tests (parse/stringify/project + facts)
 make native/qjson_parse.c  # regenerate Lemon parser after editing .y
 
-python3 test/test_qjson.py        # legacy Python format tests
-node    test/test-qjson.js        # legacy JS format tests
-python3 test/test_qjson_sql.py    # SQL adapter tests
+# qjson_ext_sqlcipher$(EXT_SUFFIX) is also available for SQLCipher headers
 ```
+
+The Python and JS test suites that previously ran with `make test` are
+in `attic/test/` — they tested the legacy reimplementations, not the
+foundation, so they are not gated. The C suite (`./test_qjson` driven
+by the facts library) is the foundation truth.
 
 ## Key concepts (bedrock summary)
 
@@ -121,7 +126,8 @@ take/return TEXT decimal strings):
 - SQLite/SQLCipher: `REAL` (8-byte), `BLOB`, `INTEGER PRIMARY KEY`
 - SQLCipher: `key='...'` triggers `PRAGMA key` before any operation
 
-**Query translator** (path → SQL JOINs, in `src/qjson_query.py`):
+**Query translator** (path → SQL JOINs, in `qjson_sqlite_ext.c`,
+also as the attic Python reference at `attic/src/qjson_query.py`):
 `.key` (object child), `[n]` (array index), `[K]` (variable binding,
 shared across SELECT/WHERE), `.[]` (iterate). **No `..`** (recursive
 descent) — every path is a fixed JOIN chain. WHERE supports interval
@@ -135,16 +141,27 @@ key; browser via SQLCipher WASM + OPFS/IndexedDB.
 
 ## Out of scope (moved out)
 
-These belonged to the query layer and have been moved or removed:
+These belonged to the query layer or to legacy hosts and have been
+moved or removed:
 
 - **Query language, pattern matching, unification, equation solving,
   assert/retract/signal, reactive watchers** → live in
   [`../datalog`](https://github.com/wmacevoy/datalog).
 - **Constraint solver SQL functions** (`qjson_solve_*`) → parked in
-  [`attic/native/qjson_solve_ext.c`](attic/native/qjson_solve_ext.c)
-  as reference for the datalog port.
+  [`attic/native/qjson_solve_ext.c`](attic/native/qjson_solve_ext.c).
 - **In-memory resolver, reactive store, brain ops** → parked in
-  [`attic/native/`](attic/) as reference.
+  [`attic/native/qjson_resolve.{c,h}`, `qjson_db.{c,h}`].
+- **Crypto** (SHA-256, AES, HMAC, HKDF, Shamir, JWT) → parked in
+  [`attic/native/qjson_crypto.{c,h}`](attic/) and the SQL wrappers in
+  `attic/native/qjson_crypto_ext.c`. Belongs in an application layer
+  per `PLAN-wyatt-migration.md`, not in the database extension.
+- **Legacy host reimplementations** (`src/qjson.{js,py}`,
+  `qjson{-,_}sql.{js,py}`, `qjson_query.py`, `qjq.py`) and their tests
+  → parked in `attic/src/` and `attic/test/`. Hosts must call
+  foundation, not reimplement format/projection/comparison.
+- **`qjq` C host** → parked in `attic/native/qjq.c` because it embeds
+  the legacy JS parser. To reactivate: replace the embed with FFI to
+  libqjson. See `PLAN-qjq.md`.
 
 ## Constraints
 

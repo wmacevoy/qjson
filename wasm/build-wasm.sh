@@ -1,12 +1,23 @@
 #!/bin/bash
 set -e
 
-# Build SQLCipher + QJSON WASM bundle inside Docker.
+# BROKEN as of 2026-04-29 — references attic/src/qjson.js (legacy
+# standalone parser, moved out of the source tree). Do not run.
 #
+# To restore: replace the legacy-JS embed with a WASM build of libqjson
+# itself (foundation), so the browser host calls the C reference impl
+# instead of a parallel JS reimplementation. See PLAN-qjq.md / CLAUDE.md
+# living-space row for Node/Browser. The legacy file referenced below
+# is now at attic/src/qjson.js as a reference for what the bindings
+# need to expose.
+#
+# Original purpose: Build SQLCipher + QJSON WASM bundle inside Docker.
 # Usage: ./wasm/build-wasm.sh
 # Output: wasm/dist/sqlcipher.{js,wasm} + JS helpers + qjson.js
-#
 # Requires: docker, ../sqlcipher-libressl
+
+echo "wasm/build-wasm.sh: BROKEN — see comment at top of file" >&2
+exit 1
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 QJSON_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
